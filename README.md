@@ -51,6 +51,7 @@ These are the price of the guarantee above.
 | `tests/negative_cases.yaml` | Payloads that must fail or must pass schema validation. |
 | `requirements-dev.txt` | Dependencies for the checker. |
 | `redocly.yaml` | Configuration for the optional Redocly lint. |
+| `.github/workflows/contract.yml` | GitHub Actions workflow that runs the checker and the Redocly lint on every push to `main` and every pull request. |
 
 ## Running the checks
 
@@ -65,5 +66,7 @@ Optional second opinion:
 ```sh
 npx @redocly/cli lint openapi.yaml
 ```
+
+GitHub Actions runs both commands on every push to `main` and every pull request (`.github/workflows/contract.yml`).
 
 The checks are static. Authorization, atomicity, and the merge algorithm are verified by the acceptance scenarios in section 6 of the design guide once a server exists.
