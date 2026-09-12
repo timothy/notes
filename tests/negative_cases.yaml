@@ -343,6 +343,158 @@ must_fail:
     description: empty cursor string is not a cursor
     payload: ""
 
+  # ---- Ownership and review policy (v2) --------------------------------------
+  - schema: AddOwner
+    description: userId is required
+    payload: {}
+  - schema: AddOwner
+    description: userId must be a UUID
+    payload: {userId: cara}
+  - schema: AddOwner
+    description: unknown field rejected
+    payload: {userId: "99999999-9999-4999-8999-999999999999", role: admin}
+  - schema: ReviewPolicy
+    description: peer approval needs a count
+    payload: {mode: peer_approval}
+  - schema: ReviewPolicy
+    description: peer approval cannot have a null count
+    payload: {mode: peer_approval, requiredApprovals: null}
+  - schema: ReviewPolicy
+    description: peer approval needs at least one approval
+    payload: {mode: peer_approval, requiredApprovals: 0}
+  - schema: ReviewPolicy
+    description: self merge cannot carry a count
+    payload: {mode: self_merge, requiredApprovals: 1}
+  - schema: ReviewPolicy
+    description: unknown review mode
+    payload: {mode: owner_vote, requiredApprovals: 1}
+  - schema: ReviewPolicy
+    description: mode is required
+    payload: {requiredApprovals: 2}
+  - schema: ReviewPolicy
+    description: the count is always present (null under self merge)
+    payload: {mode: self_merge}
+  - schema: Note
+    description: owners are unique
+    payload:
+      id: "44444444-4444-4444-8444-444444444444"
+      authorId: "11111111-1111-4111-8111-111111111111"
+      ownerIds: ["11111111-1111-4111-8111-111111111111", "11111111-1111-4111-8111-111111111111"]
+      reviewPolicy: {mode: self_merge, requiredApprovals: null}
+      title: "Release checklist"
+      body: "x\n"
+      tags: [release]
+      createdAt: "2026-09-10T14:00:00Z"
+      updatedAt: "2026-09-10T14:00:00Z"
+      deletedAt: null
+      expiresAt: null
+      isOwner: true
+      effectivePermissions: [read, comment, propose_edit]
+  - schema: Note
+    description: at least one owner
+    payload:
+      id: "44444444-4444-4444-8444-444444444444"
+      authorId: "11111111-1111-4111-8111-111111111111"
+      ownerIds: []
+      reviewPolicy: {mode: self_merge, requiredApprovals: null}
+      title: "Release checklist"
+      body: "x\n"
+      tags: [release]
+      createdAt: "2026-09-10T14:00:00Z"
+      updatedAt: "2026-09-10T14:00:00Z"
+      deletedAt: null
+      expiresAt: null
+      isOwner: true
+      effectivePermissions: [read, comment, propose_edit]
+  - schema: Note
+    description: at most 20 owners
+    payload:
+      id: "44444444-4444-4444-8444-444444444444"
+      authorId: "11111111-1111-4111-8111-111111111111"
+      ownerIds: ["11111111-1111-4111-8111-111111111111", "00000000-0000-4000-8000-000000000001", "00000000-0000-4000-8000-000000000002", "00000000-0000-4000-8000-000000000003", "00000000-0000-4000-8000-000000000004", "00000000-0000-4000-8000-000000000005", "00000000-0000-4000-8000-000000000006", "00000000-0000-4000-8000-000000000007", "00000000-0000-4000-8000-000000000008", "00000000-0000-4000-8000-000000000009", "00000000-0000-4000-8000-000000000010", "00000000-0000-4000-8000-000000000011", "00000000-0000-4000-8000-000000000012", "00000000-0000-4000-8000-000000000013", "00000000-0000-4000-8000-000000000014", "00000000-0000-4000-8000-000000000015", "00000000-0000-4000-8000-000000000016", "00000000-0000-4000-8000-000000000017", "00000000-0000-4000-8000-000000000018", "00000000-0000-4000-8000-000000000019", "00000000-0000-4000-8000-000000000020"]
+      reviewPolicy: {mode: self_merge, requiredApprovals: null}
+      title: "Release checklist"
+      body: "x\n"
+      tags: [release]
+      createdAt: "2026-09-10T14:00:00Z"
+      updatedAt: "2026-09-10T14:00:00Z"
+      deletedAt: null
+      expiresAt: null
+      isOwner: true
+      effectivePermissions: [read, comment, propose_edit]
+  - schema: EditRequest
+    description: a rejected request records who rejected it
+    payload:
+      id: "77777777-7777-4777-8777-777777777777"
+      noteId: "44444444-4444-4444-8444-444444444444"
+      noteTitle: "Release checklist"
+      proposerId: "22222222-2222-4222-8222-222222222222"
+      status: rejected
+      requiredApprovals: 0
+      approvals: []
+      createdAt: "2026-09-10T15:00:00Z"
+      updatedAt: "2026-09-10T16:00:00Z"
+      closedAt: "2026-09-10T16:00:00Z"
+      baseContent: {title: "Release checklist", body: "a\n"}
+      proposedContent: {title: "Release checklist", body: "b\n"}
+      explanation: null
+      proposalDiff: {title: "", body: "--- base/body\n+++ proposed/body\n@@ -1 +1 @@\n-a\n+b\n"}
+      rejectionReason: null
+      rejectedBy: null
+      mergeRecord: null
+  - schema: EditRequest
+    description: an open request has no rejectedBy
+    payload:
+      id: "77777777-7777-4777-8777-777777777777"
+      noteId: "44444444-4444-4444-8444-444444444444"
+      noteTitle: "Release checklist"
+      proposerId: "22222222-2222-4222-8222-222222222222"
+      status: open
+      requiredApprovals: 0
+      approvals: []
+      createdAt: "2026-09-10T15:00:00Z"
+      updatedAt: "2026-09-10T16:00:00Z"
+      closedAt: null
+      baseContent: {title: "Release checklist", body: "a\n"}
+      proposedContent: {title: "Release checklist", body: "b\n"}
+      explanation: null
+      proposalDiff: {title: "", body: "--- base/body\n+++ proposed/body\n@@ -1 +1 @@\n-a\n+b\n"}
+      rejectionReason: null
+      rejectedBy: "11111111-1111-4111-8111-111111111111"
+      mergeRecord: null
+  - schema: EditRequest
+    description: an approval needs a timestamp
+    payload:
+      id: "77777777-7777-4777-8777-777777777777"
+      noteId: "44444444-4444-4444-8444-444444444444"
+      noteTitle: "Release checklist"
+      proposerId: "22222222-2222-4222-8222-222222222222"
+      status: open
+      requiredApprovals: 1
+      approvals: [{userId: "99999999-9999-4999-8999-999999999999"}]
+      createdAt: "2026-09-10T15:00:00Z"
+      updatedAt: "2026-09-10T16:00:00Z"
+      closedAt: null
+      baseContent: {title: "Release checklist", body: "a\n"}
+      proposedContent: {title: "Release checklist", body: "b\n"}
+      explanation: null
+      proposalDiff: {title: "", body: "--- base/body\n+++ proposed/body\n@@ -1 +1 @@\n-a\n+b\n"}
+      rejectionReason: null
+      rejectedBy: null
+      mergeRecord: null
+  - schema: Approval
+    description: approvals carry no extra fields
+    payload: {userId: "99999999-9999-4999-8999-999999999999", approvedAt: "2026-09-12T10:00:00Z", comment: "lgtm"}
+  - schema: RequestComment
+    description: belongs to a request, not a note
+    payload:
+      id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+      noteId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+      authorId: "99999999-9999-4999-8999-999999999999"
+      body: "Looks good. Can you add the rollback step?"
+      createdAt: "2026-09-12T10:05:00Z"
+      updatedAt: "2026-09-12T10:05:00Z"
+
 must_pass:
   - schema: CreateNote
     description: body and tags are optional
@@ -433,3 +585,92 @@ must_pass:
       title: Not found
       status: 404
       code: not_found
+  - schema: AddOwner
+    description: add a co-owner
+    payload: {userId: "99999999-9999-4999-8999-999999999999"}
+  - schema: ReviewPolicy
+    description: self merge with an explicit null count
+    payload: {mode: self_merge, requiredApprovals: null}
+  - schema: ReviewPolicy
+    description: two peer approvals
+    payload: {mode: peer_approval, requiredApprovals: 2}
+  - schema: Note
+    description: protected runbook as seen by co-owner Cara
+    payload:
+      id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+      authorId: "11111111-1111-4111-8111-111111111111"
+      ownerIds: ["11111111-1111-4111-8111-111111111111", "99999999-9999-4999-8999-999999999999"]
+      reviewPolicy: {mode: peer_approval, requiredApprovals: 1}
+      title: "Incident runbook"
+      body: "## Incident\n\n- Page the on-call\n- Open a channel\n"
+      tags: [ops]
+      createdAt: "2026-09-12T09:00:00Z"
+      updatedAt: "2026-09-12T09:20:00Z"
+      deletedAt: null
+      expiresAt: null
+      isOwner: true
+      effectivePermissions: [read, comment, propose_edit]
+  - schema: NoteSummary
+    description: unprotected single-owner summary
+    payload:
+      id: "44444444-4444-4444-8444-444444444444"
+      authorId: "11111111-1111-4111-8111-111111111111"
+      ownerIds: ["11111111-1111-4111-8111-111111111111"]
+      reviewPolicy: {mode: self_merge, requiredApprovals: null}
+      title: "Release checklist"
+      tags: [release]
+      createdAt: "2026-09-10T14:00:00Z"
+      updatedAt: "2026-09-10T14:00:00Z"
+      deletedAt: null
+      expiresAt: null
+      isOwner: true
+      effectivePermissions: [read, comment, propose_edit]
+  - schema: EditRequest
+    description: owner-proposed request with one peer approval
+    payload:
+      id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+      noteId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+      noteTitle: "Incident runbook"
+      proposerId: "11111111-1111-4111-8111-111111111111"
+      status: open
+      requiredApprovals: 1
+      approvals: [{userId: "99999999-9999-4999-8999-999999999999", approvedAt: "2026-09-12T10:10:00Z"}]
+      createdAt: "2026-09-12T10:00:00Z"
+      updatedAt: "2026-09-12T10:10:00Z"
+      closedAt: null
+      baseContent: {title: "Incident runbook", body: "## Incident\n\n- Page the on-call\n- Open a channel\n"}
+      proposedContent: {title: "Incident runbook", body: "## Incident\n\n- Page the on-call\n- Open a channel\n- Roll back if the error rate doubles\n"}
+      explanation: "Add the rollback trigger."
+      proposalDiff: {title: "", body: "--- base/body\n+++ proposed/body\n@@ -1,4 +1,5 @@\n ## Incident\n \n - Page the on-call\n - Open a channel\n+- Roll back if the error rate doubles\n"}
+      rejectionReason: null
+      rejectedBy: null
+      mergeRecord: null
+  - schema: EditRequest
+    description: a rejected request names the rejecting owner
+    payload:
+      id: "77777777-7777-4777-8777-777777777777"
+      noteId: "44444444-4444-4444-8444-444444444444"
+      noteTitle: "Release checklist"
+      proposerId: "22222222-2222-4222-8222-222222222222"
+      status: rejected
+      requiredApprovals: 0
+      approvals: []
+      createdAt: "2026-09-10T15:00:00Z"
+      updatedAt: "2026-09-10T16:00:00Z"
+      closedAt: "2026-09-10T16:00:00Z"
+      baseContent: {title: "Release checklist", body: "a\n"}
+      proposedContent: {title: "Release checklist", body: "b\n"}
+      explanation: null
+      proposalDiff: {title: "", body: "--- base/body\n+++ proposed/body\n@@ -1 +1 @@\n-a\n+b\n"}
+      rejectionReason: null
+      rejectedBy: "99999999-9999-4999-8999-999999999999"
+      mergeRecord: null
+  - schema: RequestComment
+    description: full request comment
+    payload:
+      id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+      requestId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+      authorId: "99999999-9999-4999-8999-999999999999"
+      body: "Looks good. Can you add the rollback step?"
+      createdAt: "2026-09-12T10:05:00Z"
+      updatedAt: "2026-09-12T10:05:00Z"
