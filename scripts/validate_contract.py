@@ -7,9 +7,11 @@ Run from the project root:
 
 Every check is static. The script validates the OpenAPI document, its references, every component
 schema, the examples in both ``openapi.yaml`` and ``docs/design-guide.md``, authentication coverage,
-conditional-mutation coverage, the endpoint inventory, required response headers and media types, and
-the must-fail / must-pass fixtures in ``tests/negative_cases.yaml``. It never runs a backend, so it
-proves nothing about authorization, transactions, or the merge algorithm (design guide, section 6).
+conditional-mutation coverage, the endpoint inventory, required response headers and media types, the
+must-fail / must-pass fixtures in ``tests/negative_cases.yaml``, the ``ErrorCode`` vocabulary against the
+Problem examples, and the ownership and approval invariants JSON Schema cannot express. It never runs a
+backend, so it proves nothing about authorization, transactions, or the merge algorithm (design guide,
+section 6).
 
 Exit status is 0 when every check passes and 1 otherwise.
 """
@@ -68,6 +70,9 @@ EXPECTED_OPERATIONS: dict[tuple[str, str], str] = {
     ("PATCH", "/notes/{noteId}"): "updateNote",
     ("DELETE", "/notes/{noteId}"): "trashNote",
     ("POST", "/notes/{noteId}/restore"): "restoreNote",
+    ("POST", "/notes/{noteId}/owners"): "addOwner",
+    ("DELETE", "/notes/{noteId}/owners/{userId}"): "removeOwner",
+    ("PATCH", "/notes/{noteId}/review-policy"): "updateReviewPolicy",
     ("GET", "/notes/{noteId}/shares"): "listShares",
     ("POST", "/notes/{noteId}/shares"): "createShare",
     ("GET", "/notes/{noteId}/shares/{shareId}"): "getShare",
@@ -84,9 +89,16 @@ EXPECTED_OPERATIONS: dict[tuple[str, str], str] = {
     ("GET", "/edit-requests/{requestId}"): "getEditRequest",
     ("PATCH", "/edit-requests/{requestId}"): "reviseEditRequest",
     ("POST", "/edit-requests/{requestId}/preview"): "previewEditRequest",
+    ("POST", "/edit-requests/{requestId}/approve"): "approveEditRequest",
+    ("POST", "/edit-requests/{requestId}/revoke-approval"): "revokeEditRequestApproval",
     ("POST", "/edit-requests/{requestId}/merge"): "mergeEditRequest",
     ("POST", "/edit-requests/{requestId}/reject"): "rejectEditRequest",
     ("POST", "/edit-requests/{requestId}/withdraw"): "withdrawEditRequest",
+    ("GET", "/edit-requests/{requestId}/comments"): "listEditRequestComments",
+    ("POST", "/edit-requests/{requestId}/comments"): "createEditRequestComment",
+    ("GET", "/edit-requests/{requestId}/comments/{commentId}"): "getEditRequestComment",
+    ("PATCH", "/edit-requests/{requestId}/comments/{commentId}"): "updateEditRequestComment",
+    ("DELETE", "/edit-requests/{requestId}/comments/{commentId}"): "deleteEditRequestComment",
 }
 
 # Operations that mutate an existing ETag-bearing resource: If-Match required, 412 and 428 declared.
@@ -95,12 +107,19 @@ CONDITIONAL_OPERATIONS = frozenset(
         "updateNote",
         "trashNote",
         "restoreNote",
+        "addOwner",
+        "removeOwner",
+        "updateReviewPolicy",
         "updateComment",
         "deleteComment",
         "reviseEditRequest",
+        "approveEditRequest",
+        "revokeEditRequestApproval",
         "mergeEditRequest",
         "rejectEditRequest",
         "withdrawEditRequest",
+        "updateEditRequestComment",
+        "deleteEditRequestComment",
     }
 )
 
@@ -112,24 +131,41 @@ ETAG_RESPONSES = frozenset(
         ("updateNote", "200"),
         ("trashNote", "204"),
         ("restoreNote", "200"),
+        ("addOwner", "200"),
+        ("removeOwner", "200"),
+        ("updateReviewPolicy", "200"),
         ("createComment", "201"),
         ("getComment", "200"),
         ("updateComment", "200"),
         ("createEditRequest", "201"),
         ("getEditRequest", "200"),
         ("reviseEditRequest", "200"),
+        ("approveEditRequest", "200"),
+        ("revokeEditRequestApproval", "200"),
         ("mergeEditRequest", "200"),
         ("rejectEditRequest", "200"),
         ("withdrawEditRequest", "200"),
+        ("createEditRequestComment", "201"),
+        ("getEditRequestComment", "200"),
+        ("updateEditRequestComment", "200"),
     }
 )
 
 CREATE_OPERATIONS = frozenset(
-    {"createTeam", "addMembership", "createNote", "createShare", "createComment", "createEditRequest"}
+    {
+        "createTeam",
+        "addMembership",
+        "createNote",
+        "createShare",
+        "createComment",
+        "createEditRequest",
+        "createEditRequestComment",
+    }
 )
 
 SUCCESS_MEDIA_TYPE = "application/json"
 PROBLEM_MEDIA_TYPE = "application/problem+json"
+PROBLEM_TYPE_PREFIX = "https://notes-api.example.com/problems/"
 GUIDE_BLOCK = re.compile(r"<!--\s*schema:\s*([A-Za-z0-9_]+)\s*-->\s*```json\s*\n(.*?)```", re.DOTALL)
 
 
@@ -545,6 +581,98 @@ def check_negative_cases(contract: Contract, cases: Any) -> list[str]:
     return problems
 
 
+def check_error_codes(spec: dict) -> list[str]:
+    """Every ErrorCode has a Problem example; every Problem example uses a known code and the matching
+    ``type`` URI; a 409 component carrying several codes names each of them in its description."""
+    problems: list[str] = []
+    components = spec.get("components", {})
+    codes = set((components.get("schemas", {}).get("ErrorCode") or {}).get("enum") or [])
+    if not codes:
+        return ["components/schemas/ErrorCode has no enum"]
+    covered: set[str] = set()
+    for name, example in components.get("examples", {}).items():
+        value = example.get("value") if isinstance(example, dict) else None
+        if not isinstance(value, dict) or "code" not in value:
+            continue
+        code = value["code"]
+        covered.add(code)
+        if code not in codes:
+            problems.append(f"components/examples/{name}: code {code!r} is not in ErrorCode")
+        if value.get("type") != f"{PROBLEM_TYPE_PREFIX}{code}":
+            problems.append(f"components/examples/{name}: type must be {PROBLEM_TYPE_PREFIX}{code}")
+    for code in sorted(codes - covered):
+        problems.append(f"ErrorCode {code!r} has no Problem example")
+    used_409: set[str] = set()
+    for _, _, operation, _ in iter_operations(spec):
+        response = (operation.get("responses") or {}).get("409")
+        if isinstance(response, dict) and "$ref" in response:
+            used_409.add(response["$ref"].rsplit("/", 1)[-1])
+    for name in sorted(used_409):
+        response = components.get("responses", {}).get(name) or {}
+        media = (response.get("content") or {}).get(PROBLEM_MEDIA_TYPE) or {}
+        carried: set[str] = set()
+        for example in (media.get("examples") or {}).values():
+            value = deref(spec, example).get("value")
+            if isinstance(value, dict) and "code" in value:
+                carried.add(value["code"])
+        if len(carried) < 2:
+            continue
+        for code in sorted(carried):
+            if f"`{code}`" not in response.get("description", ""):
+                problems.append(f"components/responses/{name}: description does not name `{code}`")
+    return problems
+
+
+def _walk_objects(node: Any, path: str) -> Iterator[tuple[str, dict]]:
+    if isinstance(node, dict):
+        yield path, node
+        for key, value in node.items():
+            yield from _walk_objects(value, f"{path}/{escape_pointer_token(str(key))}")
+    elif isinstance(node, list):
+        for index, value in enumerate(node):
+            yield from _walk_objects(value, f"{path}/{index}")
+
+
+def check_ownership_invariants(spec: dict) -> list[str]:
+    """Cross-field rules JSON Schema cannot express, checked on every example value: note owners start
+    with the author and are unique, the policy never exceeds the owner count, approvals exclude the
+    proposer and stay unique and sorted, and a merged request satisfied its requirement counting the
+    merger (design guide, sections 2 and 3). Shapes are recognised by key presence, which is safe because
+    check 5 already validates every example against its closed schema."""
+    problems: list[str] = []
+    for name, example in spec.get("components", {}).get("examples", {}).items():
+        if not isinstance(example, dict):
+            continue
+        for path, obj in _walk_objects(example.get("value"), f"components/examples/{name}"):
+            if "authorId" in obj and isinstance(obj.get("ownerIds"), list):
+                owners = obj["ownerIds"]
+                if not owners or owners[0] != obj["authorId"]:
+                    problems.append(f"{path}: ownerIds must start with authorId")
+                if len(set(owners)) != len(owners):
+                    problems.append(f"{path}: ownerIds repeats an owner")
+                required = (obj.get("reviewPolicy") or {}).get("requiredApprovals")
+                if isinstance(required, int) and required > len(owners):
+                    problems.append(f"{path}: reviewPolicy.requiredApprovals exceeds the owner count")
+            if "proposerId" in obj and isinstance(obj.get("approvals"), list):
+                approvals = [a for a in obj["approvals"] if isinstance(a, dict)]
+                approvers = [a.get("userId") for a in approvals]
+                if obj["proposerId"] in approvers:
+                    problems.append(f"{path}: the proposer cannot approve their own request")
+                if len(set(approvers)) != len(approvers):
+                    problems.append(f"{path}: duplicate approver")
+                order = [(a.get("approvedAt"), a.get("userId")) for a in approvals]
+                if order != sorted(order):
+                    problems.append(f"{path}: approvals must be sorted approvedAt ASC, userId ASC")
+                record = obj.get("mergeRecord")
+                if isinstance(record, dict):
+                    merger = record.get("mergedBy")
+                    counted = len(approvals) + int(merger not in approvers and merger != obj["proposerId"])
+                    required = obj.get("requiredApprovals", 0)
+                    if counted < required:
+                        problems.append(f"{path}: merged with {counted} counted approvals, {required} required")
+    return problems
+
+
 # ---------------------------------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------------------------------
@@ -572,6 +700,8 @@ def main() -> int:
         ("Endpoint inventory matches the design guide", lambda: check_inventory(spec)),
         ("Required headers and media types", lambda: check_headers_and_media_types(spec)),
         ("Negative and positive schema fixtures", lambda: check_negative_cases(contract, cases)),
+        ("Every ErrorCode has a Problem example and vice versa", lambda: check_error_codes(spec)),
+        ("Ownership and approval invariants in examples", lambda: check_ownership_invariants(spec)),
     ]
 
     failed = 0
