@@ -1,0 +1,43 @@
+# Runs the contract checks on every push to main and every pull request.
+# scripts/validate_contract.py is the canonical check set (design guide, section 6);
+# the Redocly lint is the optional second opinion configured in redocly.yaml.
+name: Contract checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: validate_contract.py
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+      - run: python -m pip install -r requirements-dev.txt
+      - run: python scripts/validate_contract.py
+
+  redocly:
+    name: Redocly lint
+    runs-on: ubuntu-latest
+    env:
+      REDOCLY_TELEMETRY: "off"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - run: npx --yes @redocly/cli@2.52.1 lint openapi.yaml
