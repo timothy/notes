@@ -2,7 +2,7 @@ openapi: 3.1.2
 jsonSchemaDialect: https://spec.openapis.org/oas/3.1/dialect/base
 info:
   title: Notes API
-  version: 1.0.0
+  version: 2.0.0
   summary: Personal notes shared with people and teams, with comments and owner-reviewed edit requests.
   description: |
     REST contract for a notes service used by several small teams in one workspace.
@@ -2062,8 +2062,8 @@ components:
       description: >-
         Independent note capability. `read` covers the note and its comments; `comment` allows creating and
         managing one's own comments; `propose_edit` allows submitting and revising edit requests. None of
-        them allows direct edits, sharing, trashing, previewing, merging, or rejecting; those belong to the
-        owner alone.
+        them allows direct edits, sharing, trashing, previewing, merging, approving, or rejecting; those belong
+        to owners alone.
     PermissionInput:
       type: array
       items:
@@ -2085,6 +2085,14 @@ components:
     RecipientType:
       type: string
       enum: [user, team]
+    ReviewMode:
+      type: string
+      enum: [self_merge, peer_approval]
+      description: >-
+        How changes land on a protected note (one with more than one owner). Under `self_merge` any owner
+        merges an edit request alone after reviewing its diff. Under `peer_approval` a request needs the
+        policy's `requiredApprovals`, and every landed change involves at least two distinct owners as
+        proposer, approver, or merger. Single-owner notes are never protected and ignore the policy.
     EditRequestStatus:
       type: string
       enum: [open, merged, rejected, withdrawn]
@@ -2127,6 +2135,10 @@ components:
         - duplicate_share
         - last_admin
         - merge_conflict
+        - direct_edit_not_allowed
+        - approval_required
+        - duplicate_owner
+        - author_cannot_be_removed
 
     # ---- Request bodies (unknown fields rejected) ---------------------------
     CreateTeam:
@@ -2177,7 +2189,10 @@ components:
       type: object
       additionalProperties: false
       minProperties: 1
-      description: Partial update. Omitted properties are unchanged; a supplied `tags` array replaces the previous one. Null is rejected.
+      description: >-
+        Partial update. Omitted properties are unchanged; a supplied `tags` array replaces the previous one.
+        Null is rejected. On a protected note (more than one owner) `title` and `body` are refused with `409`
+        and code `direct_edit_not_allowed`; only `tags` may be changed directly.
       properties:
         title:
           $ref: '#/components/schemas/NoteTitle'
@@ -2185,6 +2200,14 @@ components:
           $ref: '#/components/schemas/NoteBody'
         tags:
           $ref: '#/components/schemas/TagList'
+    AddOwner:
+      type: object
+      additionalProperties: false
+      required: [userId]
+      properties:
+        userId:
+          $ref: '#/components/schemas/Uuid'
+          description: An existing user to add as a co-owner. An unknown user is `422`.
     Recipient:
       type: object
       additionalProperties: false
@@ -2260,7 +2283,10 @@ components:
     PreviewEditRequest:
       type: object
       additionalProperties: false
-      description: Optional owner-supplied complete final content. An empty object previews the automatic merge.
+      description: >-
+        Optional owner-supplied complete final content. An empty object previews the automatic merge. Under
+        `peer_approval` on a protected note `finalContent` is `422` (pointer `/finalContent`): the merge must
+        commit the approved proposal.
       properties:
         finalContent:
           $ref: '#/components/schemas/Content'
@@ -2274,7 +2300,9 @@ components:
           description: The reviewed note ETag. The request ETag travels in `If-Match`.
         finalContent:
           $ref: '#/components/schemas/Content'
-          description: Complete owner-approved title and body. When omitted, the clean automatic candidate is merged.
+          description: >-
+            Complete owner-approved title and body. When omitted, the clean automatic candidate is merged.
+            Under `peer_approval` on a protected note this field is `422` (pointer `/finalContent`).
     RejectEditRequest:
       type: object
       additionalProperties: false
@@ -2323,16 +2351,59 @@ components:
         updatedAt:
           $ref: '#/components/schemas/Timestamp'
           description: Advances when the role changes.
+    ReviewPolicy:
+      type: object
+      additionalProperties: false
+      required: [mode, requiredApprovals]
+      description: >-
+        How a protected note accepts changes. `requiredApprovals` is `null` under `self_merge` and an
+        integer from 1 up to the number of owners under `peer_approval`. The same object is the request body
+        of `PATCH /notes/{noteId}/review-policy`. The effective requirement of an individual edit request is
+        derived from this value and reported as `requiredApprovals` on the request.
+      properties:
+        mode:
+          $ref: '#/components/schemas/ReviewMode'
+        requiredApprovals:
+          type: [integer, 'null']
+          minimum: 1
+          maximum: 20
+      if:
+        properties:
+          mode:
+            const: self_merge
+      then:
+        properties:
+          requiredApprovals:
+            type: 'null'
+      else:
+        properties:
+          requiredApprovals:
+            type: integer
     NoteFields:
       type: object
       description: Fields shared by `NoteSummary` and `Note`. Not used directly.
-      required: [id, authorId, title, tags, createdAt, updatedAt, deletedAt, expiresAt, isOwner, effectivePermissions]
+      required: [id, authorId, ownerIds, reviewPolicy, title, tags, createdAt, updatedAt, deletedAt, expiresAt, isOwner, effectivePermissions]
       properties:
         id:
           $ref: '#/components/schemas/Uuid'
         authorId:
           $ref: '#/components/schemas/Uuid'
-          description: The immutable owner.
+          description: >-
+            The original author, a permanent owner and the note's administrator: only they add or remove
+            co-owners and set the review policy.
+        ownerIds:
+          type: array
+          items:
+            $ref: '#/components/schemas/Uuid'
+          minItems: 1
+          maxItems: 20
+          uniqueItems: true
+          description: >-
+            Every owner: the author first, then co-owners in the order they were added. A note with more than
+            one owner is protected: its title and body change only through approved edit requests.
+        reviewPolicy:
+          $ref: '#/components/schemas/ReviewPolicy'
+          description: How the note accepts changes while protected. Defaults to `self_merge`; set by the author.
         title:
           $ref: '#/components/schemas/NoteTitle'
         tags:
@@ -2341,7 +2412,7 @@ components:
           $ref: '#/components/schemas/Timestamp'
         updatedAt:
           $ref: '#/components/schemas/Timestamp'
-          description: Advances with content, tag, merge, trash, and restore changes; never with shares, comments, or requests.
+          description: Advances with content, tag, merge, trash, restore, ownership, and review-policy changes; never with shares, comments, or requests.
         deletedAt:
           description: When the note was trashed, or `null` while active.
           anyOf:
@@ -2354,17 +2425,17 @@ components:
             - type: 'null'
         isOwner:
           type: boolean
-          description: Whether the caller is the note's owner.
+          description: Whether the caller is one of the note's owners.
         effectivePermissions:
           $ref: '#/components/schemas/PermissionSet'
-          description: The caller's effective permissions from the union of direct and team shares. The owner always sees all three.
+          description: The caller's effective permissions from the union of direct and team shares. Owners always see all three.
     NoteSummary:
       description: A note without its body, as returned by list operations. Versions are not included; fetch the note for its ETag.
       allOf:
         - $ref: '#/components/schemas/NoteFields'
       unevaluatedProperties: false
     Note:
-      description: A full note. The response `ETag` covers content, tags, and lifecycle metadata.
+      description: A full note. The response `ETag` covers content, tags, lifecycle metadata, ownership, and review policy; `isOwner` and `effectivePermissions` describe the caller and are outside it.
       allOf:
         - $ref: '#/components/schemas/NoteFields'
         - type: object
@@ -2408,10 +2479,38 @@ components:
           $ref: '#/components/schemas/Timestamp'
         updatedAt:
           $ref: '#/components/schemas/Timestamp'
+    RequestComment:
+      type: object
+      additionalProperties: false
+      required: [id, requestId, authorId, body, createdAt, updatedAt]
+      description: Flat Markdown comment on an edit request. Authorship is immutable. The response `ETag` covers this representation; request comments never advance the request's own ETag.
+      properties:
+        id:
+          $ref: '#/components/schemas/Uuid'
+        requestId:
+          $ref: '#/components/schemas/Uuid'
+        authorId:
+          $ref: '#/components/schemas/Uuid'
+        body:
+          $ref: '#/components/schemas/CommentBody'
+        createdAt:
+          $ref: '#/components/schemas/Timestamp'
+        updatedAt:
+          $ref: '#/components/schemas/Timestamp'
+    Approval:
+      type: object
+      additionalProperties: false
+      required: [userId, approvedAt]
+      description: An owner's explicit approval of the current `proposedContent`. Deleted while the request is open if the proposal's content changes or the approver stops being an owner.
+      properties:
+        userId:
+          $ref: '#/components/schemas/Uuid'
+        approvedAt:
+          $ref: '#/components/schemas/Timestamp'
     EditRequestFields:
       type: object
       description: Fields shared by `EditRequestSummary` and `EditRequest`. Not used directly.
-      required: [id, noteId, noteTitle, proposerId, status, createdAt, updatedAt, closedAt]
+      required: [id, noteId, noteTitle, proposerId, status, requiredApprovals, approvals, createdAt, updatedAt, closedAt]
       properties:
         id:
           $ref: '#/components/schemas/Uuid'
@@ -2424,11 +2523,30 @@ components:
           $ref: '#/components/schemas/Uuid'
         status:
           $ref: '#/components/schemas/EditRequestStatus'
+        requiredApprovals:
+          type: integer
+          minimum: 0
+          maximum: 20
+          description: >-
+            Effective approvals this request needs before it can merge: `0` on a single-owner or `self_merge`
+            note; otherwise `min(policy, owners other than the proposer)` for an owner's proposal and
+            `max(2, min(policy, owners))` for anyone else's, so at least two distinct owners take part in every
+            landed change. Live while open and frozen at closing. A view of the note's current policy and
+            owners, outside the request ETag like `noteTitle`.
+        approvals:
+          type: array
+          items:
+            $ref: '#/components/schemas/Approval'
+          maxItems: 20
+          description: >-
+            Explicit approvals by current owners other than the proposer, sorted `approvedAt ASC, userId ASC`.
+            Deleted when `proposedContent` changes or an approver stops being an owner; frozen at closing. A
+            merger who is neither the proposer nor already listed counts as one more approval.
         createdAt:
           $ref: '#/components/schemas/Timestamp'
         updatedAt:
           $ref: '#/components/schemas/Timestamp'
-          description: Advances on revision and on closing.
+          description: Advances on revision, on approval changes, and on closing.
         closedAt:
           description: When the request was merged, rejected, or withdrawn; `null` while open.
           anyOf:
@@ -2454,12 +2572,14 @@ components:
     EditRequest:
       description: >-
         Full edit request. `baseContent` is the immutable snapshot captured at submission; `proposedContent`
-        is the latest proposal; `proposalDiff` compares the two. Closed requests keep both, plus a
-        `rejectionReason` or `mergeRecord`. The response `ETag` covers this representation.
+        is the latest proposal; `proposalDiff` compares the two. Closed requests keep both, plus
+        `rejectedBy` and `rejectionReason` or a `mergeRecord`, and freeze `requiredApprovals` and
+        `approvals` as they stood at closing. The response `ETag` covers this representation except the live
+        `noteTitle` and `requiredApprovals`.
       allOf:
         - $ref: '#/components/schemas/EditRequestFields'
         - type: object
-          required: [baseContent, proposedContent, explanation, proposalDiff, rejectionReason, mergeRecord]
+          required: [baseContent, proposedContent, explanation, proposalDiff, rejectedBy, rejectionReason, mergeRecord]
           properties:
             baseContent:
               $ref: '#/components/schemas/Content'
@@ -2472,6 +2592,11 @@ components:
             proposalDiff:
               $ref: '#/components/schemas/FieldDiff'
               description: Unified diff from base to proposed, labelled `base/title`, `proposed/title`, `base/body`, `proposed/body`.
+            rejectedBy:
+              description: The owner who rejected the request; `null` unless `status` is `rejected`.
+              anyOf:
+                - $ref: '#/components/schemas/Uuid'
+                - type: 'null'
             rejectionReason:
               $ref: '#/components/schemas/RejectionReason'
             mergeRecord:
@@ -2487,6 +2612,8 @@ components:
             properties:
               closedAt:
                 type: 'null'
+              rejectedBy:
+                type: 'null'
               rejectionReason:
                 type: 'null'
               mergeRecord:
@@ -2499,6 +2626,8 @@ components:
             properties:
               closedAt:
                 $ref: '#/components/schemas/Timestamp'
+              rejectedBy:
+                type: 'null'
               rejectionReason:
                 type: 'null'
               mergeRecord:
@@ -2511,6 +2640,8 @@ components:
             properties:
               closedAt:
                 $ref: '#/components/schemas/Timestamp'
+              rejectedBy:
+                $ref: '#/components/schemas/Uuid'
               mergeRecord:
                 type: 'null'
         - if:
@@ -2521,6 +2652,8 @@ components:
             properties:
               closedAt:
                 $ref: '#/components/schemas/Timestamp'
+              rejectedBy:
+                type: 'null'
               rejectionReason:
                 type: 'null'
               mergeRecord:
@@ -2742,6 +2875,17 @@ components:
             $ref: '#/components/schemas/Comment'
         nextCursor:
           $ref: '#/components/schemas/NextCursor'
+    RequestCommentPage:
+      type: object
+      additionalProperties: false
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/RequestComment'
+        nextCursor:
+          $ref: '#/components/schemas/NextCursor'
     EditRequestSummaryPage:
       type: object
       additionalProperties: false
@@ -2905,6 +3049,8 @@ components:
       value:
         id: 44444444-4444-4444-8444-444444444444
         authorId: 11111111-1111-4111-8111-111111111111
+        ownerIds: [11111111-1111-4111-8111-111111111111]
+        reviewPolicy: {mode: self_merge, requiredApprovals: null}
         title: Release checklist
         body: "## Release\n\n- Run tests\n- Deploy\n"
         tags: [release]
@@ -2919,6 +3065,8 @@ components:
       value:
         id: 44444444-4444-4444-8444-444444444444
         authorId: 11111111-1111-4111-8111-111111111111
+        ownerIds: [11111111-1111-4111-8111-111111111111]
+        reviewPolicy: {mode: self_merge, requiredApprovals: null}
         title: Release checklist
         body: "## Release\n\n- Run tests\n- Deploy\n"
         tags: [release]
@@ -2933,6 +3081,8 @@ components:
       value:
         id: 44444444-4444-4444-8444-444444444444
         authorId: 11111111-1111-4111-8111-111111111111
+        ownerIds: [11111111-1111-4111-8111-111111111111]
+        reviewPolicy: {mode: self_merge, requiredApprovals: null}
         title: Release checklist (2026)
         body: "## Release\n\n- Run tests\n- Review metrics and error rates\n- Deploy to production\n"
         tags: [release]
@@ -2947,6 +3097,8 @@ components:
       value:
         id: 44444444-4444-4444-8444-444444444444
         authorId: 11111111-1111-4111-8111-111111111111
+        ownerIds: [11111111-1111-4111-8111-111111111111]
+        reviewPolicy: {mode: self_merge, requiredApprovals: null}
         title: Release checklist (2026)
         body: "## Release\n\n- Run tests\n- Review metrics and error rates\n- Deploy to production\n"
         tags: [release]
@@ -2961,6 +3113,8 @@ components:
       value:
         id: 44444444-4444-4444-8444-444444444444
         authorId: 11111111-1111-4111-8111-111111111111
+        ownerIds: [11111111-1111-4111-8111-111111111111]
+        reviewPolicy: {mode: self_merge, requiredApprovals: null}
         title: Release checklist (2026)
         body: "## Release\n\n- Run tests\n- Review metrics and error rates\n- Deploy to production\n"
         tags: [release]
@@ -2976,6 +3130,8 @@ components:
         items:
           - id: 44444444-4444-4444-8444-444444444444
             authorId: 11111111-1111-4111-8111-111111111111
+            ownerIds: [11111111-1111-4111-8111-111111111111]
+            reviewPolicy: {mode: self_merge, requiredApprovals: null}
             title: Release checklist
             tags: [release]
             createdAt: '2026-09-10T14:00:00Z'
@@ -2986,6 +3142,8 @@ components:
             effectivePermissions: [read, comment, propose_edit]
           - id: 43434343-4343-4343-8343-434343434343
             authorId: 22222222-2222-4222-8222-222222222222
+            ownerIds: [22222222-2222-4222-8222-222222222222]
+            reviewPolicy: {mode: self_merge, requiredApprovals: null}
             title: Onboarding notes
             tags: [onboarding]
             createdAt: '2026-09-09T09:00:00Z'
@@ -3133,6 +3291,8 @@ components:
         noteTitle: Release checklist
         proposerId: 22222222-2222-4222-8222-222222222222
         status: open
+        requiredApprovals: 0
+        approvals: []
         createdAt: '2026-09-10T15:00:00Z'
         updatedAt: '2026-09-10T15:00:00Z'
         closedAt: null
@@ -3147,6 +3307,7 @@ components:
           title: ''
           body: "--- base/body\n+++ proposed/body\n@@ -1,4 +1,5 @@\n ## Release\n \n - Run tests\n+- Review metrics\n - Deploy\n"
         rejectionReason: null
+        rejectedBy: null
         mergeRecord: null
     EditRequestMerged:
       summary: The same request after a merge with owner edits (ETag "request-v2")
@@ -3156,6 +3317,8 @@ components:
         noteTitle: Release checklist
         proposerId: 22222222-2222-4222-8222-222222222222
         status: merged
+        requiredApprovals: 0
+        approvals: []
         createdAt: '2026-09-10T15:00:00Z'
         updatedAt: '2026-09-10T16:00:00Z'
         closedAt: '2026-09-10T16:00:00Z'
@@ -3170,6 +3333,7 @@ components:
           title: ''
           body: "--- base/body\n+++ proposed/body\n@@ -1,4 +1,5 @@\n ## Release\n \n - Run tests\n+- Review metrics\n - Deploy\n"
         rejectionReason: null
+        rejectedBy: null
         mergeRecord:
           content:
             title: Release checklist
@@ -3185,6 +3349,8 @@ components:
         noteTitle: Release checklist (2026)
         proposerId: 22222222-2222-4222-8222-222222222222
         status: open
+        requiredApprovals: 0
+        approvals: []
         createdAt: '2026-09-11T09:00:00Z'
         updatedAt: '2026-09-11T09:30:00Z'
         closedAt: null
@@ -3199,6 +3365,7 @@ components:
           title: "--- base/title\n+++ proposed/title\n@@ -1 +1 @@\n-Release checklist\n+Release runbook\n"
           body: "--- base/body\n+++ proposed/body\n@@ -2,4 +2,4 @@\n \n - Run tests\n - Review metrics and error rates\n-- Deploy\n+- Deploy (staged)\n"
         rejectionReason: null
+        rejectedBy: null
         mergeRecord: null
     EditRequestRejected:
       summary: The conflicting request after rejection (ETag "request-b2")
@@ -3208,6 +3375,8 @@ components:
         noteTitle: Release checklist (2026)
         proposerId: 22222222-2222-4222-8222-222222222222
         status: rejected
+        requiredApprovals: 0
+        approvals: []
         createdAt: '2026-09-11T09:00:00Z'
         updatedAt: '2026-09-11T11:00:00Z'
         closedAt: '2026-09-11T11:00:00Z'
@@ -3222,6 +3391,7 @@ components:
           title: "--- base/title\n+++ proposed/title\n@@ -1 +1 @@\n-Release checklist\n+Release runbook\n"
           body: "--- base/body\n+++ proposed/body\n@@ -2,4 +2,4 @@\n \n - Run tests\n - Review metrics and error rates\n-- Deploy\n+- Deploy (staged)\n"
         rejectionReason: Staged deploys are covered by the deployment runbook.
+        rejectedBy: 11111111-1111-4111-8111-111111111111
         mergeRecord: null
     EditRequestWithdrawn:
       summary: A request withdrawn by its proposer
@@ -3231,6 +3401,8 @@ components:
         noteTitle: Release checklist (2026)
         proposerId: 22222222-2222-4222-8222-222222222222
         status: withdrawn
+        requiredApprovals: 0
+        approvals: []
         createdAt: '2026-09-11T10:30:00Z'
         updatedAt: '2026-09-11T10:45:00Z'
         closedAt: '2026-09-11T10:45:00Z'
@@ -3245,6 +3417,7 @@ components:
           title: ''
           body: "--- base/body\n+++ proposed/body\n@@ -3,3 +3,4 @@\n - Run tests\n - Review metrics and error rates\n - Deploy to production\n+- Announce in #releases\n"
         rejectionReason: null
+        rejectedBy: null
         mergeRecord: null
     EditRequestSummaryPage:
       summary: Owner's incoming inbox of open requests on active notes
@@ -3255,6 +3428,8 @@ components:
             noteTitle: Release checklist (2026)
             proposerId: 22222222-2222-4222-8222-222222222222
             status: open
+            requiredApprovals: 0
+            approvals: []
             createdAt: '2026-09-11T09:00:00Z'
             updatedAt: '2026-09-11T09:30:00Z'
             closedAt: null
@@ -3355,6 +3530,8 @@ components:
         note:
           id: 44444444-4444-4444-8444-444444444444
           authorId: 11111111-1111-4111-8111-111111111111
+          ownerIds: [11111111-1111-4111-8111-111111111111]
+          reviewPolicy: {mode: self_merge, requiredApprovals: null}
           title: Release checklist
           body: "## Release\n\n- Run tests\n- Review metrics and error rates\n- Deploy\n"
           tags: [release]
@@ -3371,6 +3548,8 @@ components:
           noteTitle: Release checklist
           proposerId: 22222222-2222-4222-8222-222222222222
           status: merged
+          requiredApprovals: 0
+          approvals: []
           createdAt: '2026-09-10T15:00:00Z'
           updatedAt: '2026-09-10T16:00:00Z'
           closedAt: '2026-09-10T16:00:00Z'
@@ -3385,6 +3564,7 @@ components:
             title: ''
             body: "--- base/body\n+++ proposed/body\n@@ -1,4 +1,5 @@\n ## Release\n \n - Run tests\n+- Review metrics\n - Deploy\n"
           rejectionReason: null
+          rejectedBy: null
           mergeRecord:
             content:
               title: Release checklist
