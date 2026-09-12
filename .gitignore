@@ -1,0 +1,26 @@
+# Python virtualenv and caches (see requirements-dev.txt)
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node artifacts if the Redocly lint is installed locally instead of via npx
+node_modules/
+npm-debug.log*
+
+# Local environment and secrets
+.env
+.env.*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editors
+.idea/
+.vscode/
+*.swp
+*~

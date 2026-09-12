@@ -1,0 +1,425 @@
+# Schema fixtures for scripts/validate_contract.py (design guide, section 6).
+#
+# must_fail: payloads the named component schema MUST reject.
+# must_pass: payloads the named component schema MUST accept.
+#
+# Only schema-level rules are testable here. Semantic rules (stale ETags, identical-to-base proposals,
+# sharing to the owner, last-admin protection) are acceptance scenarios for an implementation.
+
+must_fail:
+  # ---- Notes -----------------------------------------------------------------
+  - schema: CreateNote
+    description: title is required
+    payload: {body: "x"}
+  - schema: CreateNote
+    description: title must contain a non-whitespace character
+    payload: {title: "   "}
+  - schema: CreateNote
+    description: title longer than 200 code points
+    payload: {title: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+  - schema: CreateNote
+    description: unknown field rejected
+    payload: {title: "ok", color: "red"}
+  - schema: CreateNote
+    description: server-assigned id cannot be supplied
+    payload: {title: "ok", id: "44444444-4444-4444-8444-444444444444"}
+  - schema: CreateNote
+    description: ownership cannot be supplied
+    payload: {title: "ok", authorId: "11111111-1111-4111-8111-111111111111"}
+  - schema: CreateNote
+    description: duplicate tags
+    payload: {title: "ok", tags: ["release", "release"]}
+  - schema: CreateNote
+    description: tag with leading whitespace
+    payload: {title: "ok", tags: [" release"]}
+  - schema: CreateNote
+    description: tag with trailing whitespace
+    payload: {title: "ok", tags: ["release "]}
+  - schema: CreateNote
+    description: tag containing a newline
+    payload: {title: "ok", tags: ["rel\nease"]}
+  - schema: CreateNote
+    description: empty tag
+    payload: {title: "ok", tags: [""]}
+  - schema: CreateNote
+    description: null body rejected for a non-nullable property
+    payload: {title: "ok", body: null}
+  - schema: CreateNote
+    description: tags must be an array
+    payload: {title: "ok", tags: "release"}
+  - schema: UpdateNote
+    description: partial update needs at least one property
+    payload: {}
+  - schema: UpdateNote
+    description: null tags rejected
+    payload: {tags: null}
+
+  # ---- Shares ----------------------------------------------------------------
+  - schema: CreateShare
+    description: empty permission set is invalid
+    payload:
+      recipient: {type: user, id: "22222222-2222-4222-8222-222222222222"}
+      permissions: []
+  - schema: CreateShare
+    description: unknown permission
+    payload:
+      recipient: {type: user, id: "22222222-2222-4222-8222-222222222222"}
+      permissions: [write]
+  - schema: CreateShare
+    description: duplicate permission entries
+    payload:
+      recipient: {type: user, id: "22222222-2222-4222-8222-222222222222"}
+      permissions: [comment, comment]
+  - schema: CreateShare
+    description: recipient type must be user or team
+    payload:
+      recipient: {type: group, id: "33333333-3333-4333-8333-333333333333"}
+      permissions: [read]
+  - schema: CreateShare
+    description: recipient id must be a UUID
+    payload:
+      recipient: {type: user, id: "ben"}
+      permissions: [read]
+  - schema: CreateShare
+    description: recipient is required
+    payload: {permissions: [read]}
+  - schema: UpdateShare
+    description: recipient identity cannot be changed by PATCH
+    payload:
+      recipient: {type: team, id: "33333333-3333-4333-8333-333333333333"}
+      permissions: [read]
+  - schema: UpdateShare
+    description: permissions is required
+    payload: {}
+  - schema: Share
+    description: response permissions must be canonical and include read
+    payload:
+      id: "55555555-5555-4555-8555-555555555555"
+      noteId: "44444444-4444-4444-8444-444444444444"
+      recipient: {type: user, id: "22222222-2222-4222-8222-222222222222"}
+      permissions: [comment]
+      createdAt: "2026-09-10T14:10:00Z"
+      updatedAt: "2026-09-10T14:10:00Z"
+  - schema: Share
+    description: response permissions must be in canonical order
+    payload:
+      id: "55555555-5555-4555-8555-555555555555"
+      noteId: "44444444-4444-4444-8444-444444444444"
+      recipient: {type: user, id: "22222222-2222-4222-8222-222222222222"}
+      permissions: [comment, read]
+      createdAt: "2026-09-10T14:10:00Z"
+      updatedAt: "2026-09-10T14:10:00Z"
+
+  # ---- Comments --------------------------------------------------------------
+  - schema: CreateComment
+    description: blank comment body
+    payload: {body: " \n\t"}
+  - schema: CreateComment
+    description: empty comment body
+    payload: {body: ""}
+  - schema: CreateComment
+    description: authorship cannot be supplied
+    payload: {body: "hi", authorId: "22222222-2222-4222-8222-222222222222"}
+
+  # ---- Teams and memberships -------------------------------------------------
+  - schema: CreateTeam
+    description: blank team name
+    payload: {name: "   "}
+  - schema: CreateTeam
+    description: team name longer than 100 code points
+    payload: {name: "ttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt"}
+  - schema: AddMembership
+    description: role must be admin or member
+    payload: {userId: "22222222-2222-4222-8222-222222222222", role: owner}
+  - schema: AddMembership
+    description: userId is required
+    payload: {role: member}
+  - schema: UpdateMembership
+    description: role is required
+    payload: {}
+
+  # ---- Edit requests ---------------------------------------------------------
+  - schema: CreateEditRequest
+    description: baseNoteETag is required
+    payload:
+      proposedContent: {title: "Release checklist", body: "x\n"}
+  - schema: CreateEditRequest
+    description: weak ETag in a JSON body is rejected by schema
+    payload:
+      baseNoteETag: 'W/"note-v1"'
+      proposedContent: {title: "Release checklist", body: "x\n"}
+  - schema: CreateEditRequest
+    description: unquoted ETag string
+    payload:
+      baseNoteETag: note-v1
+      proposedContent: {title: "Release checklist", body: "x\n"}
+  - schema: CreateEditRequest
+    description: wildcard is not a strong ETag
+    payload:
+      baseNoteETag: '*'
+      proposedContent: {title: "Release checklist", body: "x\n"}
+  - schema: CreateEditRequest
+    description: proposedContent must be complete (body missing)
+    payload:
+      baseNoteETag: '"note-v1"'
+      proposedContent: {title: "Release checklist"}
+  - schema: CreateEditRequest
+    description: tags cannot be proposed
+    payload:
+      baseNoteETag: '"note-v1"'
+      proposedContent: {title: "Release checklist", body: "x\n", tags: [release]}
+  - schema: CreateEditRequest
+    description: trusted base text cannot be supplied by the client
+    payload:
+      baseNoteETag: '"note-v1"'
+      proposedContent: {title: "Release checklist", body: "x\n"}
+      baseContent: {title: "Release checklist", body: "forged\n"}
+  - schema: ReviseEditRequest
+    description: revision needs at least one property
+    payload: {}
+  - schema: ReviseEditRequest
+    description: status cannot be changed through revision
+    payload: {status: merged}
+  - schema: MergeEditRequest
+    description: expectedNoteETag is required
+    payload: {}
+  - schema: MergeEditRequest
+    description: partial finalContent
+    payload:
+      expectedNoteETag: '"note-v1"'
+      finalContent: {body: "x\n"}
+  - schema: PreviewEditRequest
+    description: unknown field
+    payload: {candidate: {title: "t", body: "b"}}
+  - schema: RejectEditRequest
+    description: reason longer than 10000 code points is out of contract (tested via type here)
+    payload: {reason: 42}
+
+  # ---- Responses -------------------------------------------------------------
+  - schema: PreviewResult
+    description: a conflicting preview cannot carry a candidate
+    payload:
+      requestETag: '"request-b1"'
+      currentNoteETag: '"note-v3"'
+      canMerge: false
+      usedFinalContent: false
+      candidate: {title: "t", body: "b\n"}
+      conflicts:
+        - {field: body, baseRange: {start: 5, end: 6}, base: "a\n", current: "b\n", proposed: "c\n"}
+      proposalDiff: {title: "", body: ""}
+      mergeDiff: null
+  - schema: PreviewResult
+    description: a conflicting preview must list at least one conflict
+    payload:
+      requestETag: '"request-b1"'
+      currentNoteETag: '"note-v3"'
+      canMerge: false
+      usedFinalContent: false
+      candidate: null
+      conflicts: []
+      proposalDiff: {title: "", body: ""}
+      mergeDiff: null
+  - schema: PreviewResult
+    description: a clean automatic preview cannot report conflicts
+    payload:
+      requestETag: '"request-v1"'
+      currentNoteETag: '"note-v1"'
+      canMerge: true
+      usedFinalContent: false
+      candidate: {title: "t", body: "b\n"}
+      conflicts:
+        - {field: title, baseRange: null, base: "a", current: "b", proposed: "c"}
+      proposalDiff: {title: "", body: ""}
+      mergeDiff: {title: "", body: ""}
+  - schema: Conflict
+    description: title conflicts have a null range
+    payload: {field: title, baseRange: {start: 1, end: 2}, base: "a", current: "b", proposed: "c"}
+  - schema: Conflict
+    description: body conflicts need a range
+    payload: {field: body, baseRange: null, base: "a\n", current: "b\n", proposed: "c\n"}
+  - schema: EditRequest
+    description: a merged request must carry a merge record
+    payload:
+      id: "77777777-7777-4777-8777-777777777777"
+      noteId: "44444444-4444-4444-8444-444444444444"
+      noteTitle: "Release checklist"
+      proposerId: "22222222-2222-4222-8222-222222222222"
+      status: merged
+      createdAt: "2026-09-10T15:00:00Z"
+      updatedAt: "2026-09-10T16:00:00Z"
+      closedAt: "2026-09-10T16:00:00Z"
+      baseContent: {title: "Release checklist", body: "a\n"}
+      proposedContent: {title: "Release checklist", body: "b\n"}
+      explanation: null
+      proposalDiff: {title: "", body: "--- base/body\n+++ proposed/body\n@@ -1 +1 @@\n-a\n+b\n"}
+      rejectionReason: null
+      mergeRecord: null
+  - schema: EditRequest
+    description: an open request has no closedAt
+    payload:
+      id: "77777777-7777-4777-8777-777777777777"
+      noteId: "44444444-4444-4444-8444-444444444444"
+      noteTitle: "Release checklist"
+      proposerId: "22222222-2222-4222-8222-222222222222"
+      status: open
+      createdAt: "2026-09-10T15:00:00Z"
+      updatedAt: "2026-09-10T15:00:00Z"
+      closedAt: "2026-09-10T16:00:00Z"
+      baseContent: {title: "Release checklist", body: "a\n"}
+      proposedContent: {title: "Release checklist", body: "b\n"}
+      explanation: null
+      proposalDiff: {title: "", body: "--- base/body\n+++ proposed/body\n@@ -1 +1 @@\n-a\n+b\n"}
+      rejectionReason: null
+      mergeRecord: null
+  - schema: NoteSummary
+    description: list items omit the body
+    payload:
+      id: "44444444-4444-4444-8444-444444444444"
+      authorId: "11111111-1111-4111-8111-111111111111"
+      title: "Release checklist"
+      body: "leaked"
+      tags: [release]
+      createdAt: "2026-09-10T14:00:00Z"
+      updatedAt: "2026-09-10T14:00:00Z"
+      deletedAt: null
+      expiresAt: null
+      isOwner: true
+      effectivePermissions: [read, comment, propose_edit]
+  - schema: Note
+    description: caller permissions are required on every note representation
+    payload:
+      id: "44444444-4444-4444-8444-444444444444"
+      authorId: "11111111-1111-4111-8111-111111111111"
+      title: "Release checklist"
+      body: "x\n"
+      tags: [release]
+      createdAt: "2026-09-10T14:00:00Z"
+      updatedAt: "2026-09-10T14:00:00Z"
+      deletedAt: null
+      expiresAt: null
+  - schema: User
+    description: the directory never exposes emails
+    payload:
+      id: "11111111-1111-4111-8111-111111111111"
+      displayName: "Ada Okafor"
+      email: "ada@example.com"
+      createdAt: "2026-09-01T09:00:00Z"
+  - schema: Problem
+    description: unknown error code
+    payload:
+      type: https://notes-api.example.com/problems/something_else
+      title: Something else
+      status: 400
+      code: something_else
+  - schema: Problem
+    description: code is required
+    payload:
+      type: https://notes-api.example.com/problems/not_found
+      title: Not found
+      status: 404
+  - schema: FieldError
+    description: location must be body, query, header, or path
+    payload: {location: cookie, pointer: session, detail: bad}
+  - schema: Timestamp
+    description: offsets are not accepted; times end in Z
+    payload: "2026-09-10T14:00:00+00:00"
+  - schema: Timestamp
+    description: date only is not a timestamp
+    payload: "2026-09-10"
+  - schema: Uuid
+    description: not a UUID
+    payload: "not-a-uuid"
+  - schema: NextCursor
+    description: empty cursor string is not a cursor
+    payload: ""
+
+must_pass:
+  - schema: CreateNote
+    description: body and tags are optional
+    payload: {title: "Release checklist"}
+  - schema: CreateNote
+    description: empty body is allowed
+    payload: {title: "Release checklist", body: ""}
+  - schema: CreateNote
+    description: tags may contain internal spaces and are case-sensitive
+    payload: {title: "Release checklist", tags: ["release notes", "Release Notes"]}
+  - schema: UpdateNote
+    description: replacing tags alone
+    payload: {tags: []}
+  - schema: CreateShare
+    description: read-only share to a team
+    payload:
+      recipient: {type: team, id: "33333333-3333-4333-8333-333333333333"}
+      permissions: [read]
+  - schema: CreateShare
+    description: comment-only input (read is implied)
+    payload:
+      recipient: {type: user, id: "22222222-2222-4222-8222-222222222222"}
+      permissions: [comment]
+  - schema: CreateShare
+    description: propose-only input (read is implied)
+    payload:
+      recipient: {type: user, id: "22222222-2222-4222-8222-222222222222"}
+      permissions: [propose_edit]
+  - schema: CreateShare
+    description: both capabilities in any order
+    payload:
+      recipient: {type: user, id: "22222222-2222-4222-8222-222222222222"}
+      permissions: [propose_edit, comment]
+  - schema: Share
+    description: read-only canonical response
+    payload:
+      id: "55555555-5555-4555-8555-555555555556"
+      noteId: "44444444-4444-4444-8444-444444444444"
+      recipient: {type: team, id: "33333333-3333-4333-8333-333333333333"}
+      permissions: [read]
+      createdAt: "2026-09-10T14:12:00Z"
+      updatedAt: "2026-09-10T14:12:00Z"
+  - schema: AddMembership
+    description: role defaults to member when omitted
+    payload: {userId: "22222222-2222-4222-8222-222222222222"}
+  - schema: CreateEditRequest
+    description: explanation may be null
+    payload:
+      baseNoteETag: '"note-v1"'
+      proposedContent: {title: "Release checklist", body: "## Release\n"}
+      explanation: null
+  - schema: CreateEditRequest
+    description: empty proposed body is schema-valid (nonblank rule applies to title only)
+    payload:
+      baseNoteETag: '"note-v1"'
+      proposedContent: {title: "Release checklist", body: ""}
+  - schema: ReviseEditRequest
+    description: explanation-only revision clearing the explanation
+    payload: {explanation: null}
+  - schema: PreviewEditRequest
+    description: empty object previews the automatic merge
+    payload: {}
+  - schema: MergeEditRequest
+    description: merge the automatic candidate
+    payload: {expectedNoteETag: '"note-v1"'}
+  - schema: RejectEditRequest
+    description: no reason
+    payload: {}
+  - schema: RejectEditRequest
+    description: reason explicitly null
+    payload: {reason: null}
+  - schema: Conflict
+    description: insertion conflict uses an empty base range
+    payload: {field: body, baseRange: {start: 4, end: 4}, base: "", current: "- A\n", proposed: "- B\n"}
+  - schema: Tag
+    description: internal whitespace is fine
+    payload: "release notes"
+  - schema: Timestamp
+    description: fractional seconds with Z
+    payload: "2026-09-10T14:00:00.123Z"
+  - schema: NextCursor
+    description: last page
+    payload: null
+  - schema: Problem
+    description: minimal problem without detail
+    payload:
+      type: https://notes-api.example.com/problems/not_found
+      title: Not found
+      status: 404
+      code: not_found

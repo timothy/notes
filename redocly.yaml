@@ -1,0 +1,14 @@
+# Optional second-opinion lint:  npx @redocly/cli lint openapi.yaml
+# The canonical contract checks live in scripts/validate_contract.py (design guide, section 6).
+extends:
+  - recommended
+rules:
+  # The schemas already close request and response objects with additionalProperties: false or
+  # unevaluatedProperties: false. Redocly's default additionally injects additionalProperties: false
+  # into every subschema, including if/then/else branches that intentionally name only a few
+  # properties, which produces false positives against valid examples.
+  no-invalid-media-type-examples:
+    severity: error
+    allowAdditionalProperties: true
+  # The hostname is a documented placeholder (design guide, introduction).
+  no-server-example.com: off

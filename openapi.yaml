@@ -1,0 +1,3561 @@
+openapi: 3.1.2
+jsonSchemaDialect: https://spec.openapis.org/oas/3.1/dialect/base
+info:
+  title: Notes API
+  version: 1.0.0
+  summary: Personal notes shared with people and teams, with comments and owner-reviewed edit requests.
+  description: |
+    REST contract for a notes service used by several small teams in one workspace.
+
+    * Notes belong to a person (`authorId`) and are shared to users or teams with independent
+      `read`, `comment`, and `propose_edit` permissions.
+    * Non-owners never edit live content. They submit edit requests, which the owner previews with a
+      line-based three-way merge and then merges, rejects, or leaves open.
+    * Every operation requires an external identity provider's bearer **access token**. Every response,
+      including errors, carries `Cache-Control: no-store`.
+    * Conditional mutations on notes, comments, and edit requests use strong ETags with `If-Match`.
+      Teams, memberships, and shares carry no ETag and mutate unconditionally.
+    * Errors are RFC 9457 Problem Details (`application/problem+json`) with a stable `code` from the
+      `ErrorCode` enum. A missing resource and one the caller may not discover are both `404`; a visible
+      resource the caller may not act on is `403`.
+
+    The normative design guide is `docs/design-guide.md`. Operation descriptions and schemas in this
+    document are normative too. This is a contract only; there is no reference server.
+servers:
+  - url: https://notes-api.example.com/v1
+    description: Placeholder host. Every route and every `Location` value is prefixed with `/v1`.
+security:
+  - bearerAuth: []
+tags:
+  - name: Users
+    description: The registered-user directory and the caller's own profile.
+  - name: Teams
+    description: Workspace teams that can receive note shares.
+  - name: Memberships
+    description: Team membership and roles.
+  - name: Notes
+    description: Note content, tags, trash, and restore.
+  - name: Shares
+    description: Owner-managed grants to users or teams.
+  - name: Comments
+    description: Flat Markdown comments on a note.
+  - name: Edit requests
+    description: Proposed changes, three-way preview, and atomic merge.
+
+paths:
+  /me:
+    get:
+      tags: [Users]
+      summary: Get the calling user
+      operationId: getCurrentUser
+      description: >-
+        Returns the local profile mapped to the validated `(issuer, subject)` of the access token. First
+        authenticated access provisions the profile; concurrent first access never creates duplicates.
+        Clients call this to learn their own `id`.
+      responses:
+        '200':
+          description: The caller's profile.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+              examples:
+                owner:
+                  $ref: '#/components/examples/UserOwner'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /users:
+    get:
+      tags: [Users]
+      summary: List registered users
+      operationId: listUsers
+      description: >-
+        Directory of registered users sorted by `createdAt DESC, id DESC`. Exposes IDs, display names, and
+        creation times only, never tokens, emails, or provider subjects.
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: One page of users.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserPage'
+              examples:
+                page:
+                  $ref: '#/components/examples/UserPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /users/{userId}:
+    parameters:
+      - $ref: '#/components/parameters/UserId'
+    get:
+      tags: [Users]
+      summary: Get a user
+      operationId: getUser
+      description: Returns one registered user's public profile. Unknown IDs return `404`.
+      responses:
+        '200':
+          description: The user.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+              examples:
+                owner:
+                  $ref: '#/components/examples/UserOwner'
+                proposer:
+                  $ref: '#/components/examples/UserProposer'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /teams:
+    post:
+      tags: [Teams]
+      summary: Create a team
+      operationId: createTeam
+      description: >-
+        Any registered user may create a team and atomically becomes its first `admin`. Team names need not
+        be unique.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateTeam'
+            examples:
+              platform:
+                $ref: '#/components/examples/CreateTeamRequest'
+      responses:
+        '201':
+          description: Team created. `Location` is the team's canonical URL.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+            Location:
+              $ref: '#/components/headers/Location'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Team'
+              examples:
+                platform:
+                  $ref: '#/components/examples/TeamPlatform'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+    get:
+      tags: [Teams]
+      summary: List teams
+      operationId: listTeams
+      description: >-
+        All registered users can discover team metadata. `scope=mine` narrows the list to teams the caller
+        currently belongs to. Sorted by `createdAt DESC, id DESC`.
+      parameters:
+        - $ref: '#/components/parameters/TeamScopeFilter'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: One page of teams.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TeamPage'
+              examples:
+                page:
+                  $ref: '#/components/examples/TeamPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /teams/{teamId}:
+    parameters:
+      - $ref: '#/components/parameters/TeamId'
+    get:
+      tags: [Teams]
+      summary: Get a team
+      operationId: getTeam
+      description: Team metadata is visible to every registered user. Unknown IDs return `404`.
+      responses:
+        '200':
+          description: The team.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Team'
+              examples:
+                platform:
+                  $ref: '#/components/examples/TeamPlatform'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+    patch:
+      tags: [Teams]
+      summary: Rename a team
+      operationId: updateTeam
+      description: >-
+        Team admins only; members and nonmembers receive `403`. Teams carry no ETag, so the update is
+        unconditional.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateTeam'
+            examples:
+              rename:
+                $ref: '#/components/examples/UpdateTeamRequest'
+      responses:
+        '200':
+          description: The renamed team.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Team'
+              examples:
+                platform:
+                  $ref: '#/components/examples/TeamPlatform'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+    delete:
+      tags: [Teams]
+      summary: Delete a team
+      operationId: deleteTeam
+      description: >-
+        Team admins only. Removes the team, all of its memberships, and every share addressed to it. Notes,
+        comments, and edit requests survive because they belong to people. Unconditional (no ETag).
+      responses:
+        '204':
+          description: Team deleted.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /teams/{teamId}/members:
+    parameters:
+      - $ref: '#/components/parameters/TeamId'
+    get:
+      tags: [Memberships]
+      summary: List team members
+      operationId: listMemberships
+      description: >-
+        Members only. Because team metadata is discoverable by everyone, a nonmember receives `403` rather
+        than `404`. Sorted by `joinedAt DESC, userId DESC`.
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: One page of memberships.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MembershipPage'
+              examples:
+                page:
+                  $ref: '#/components/examples/MembershipPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+    post:
+      tags: [Memberships]
+      summary: Add a member
+      operationId: addMembership
+      description: >-
+        Team admins only. Adds an existing registered user; `role` defaults to `member`. An unknown `userId`
+        is `422` (pointer `/userId`); an existing membership is `409` with code `duplicate_membership`.
+        `Location` is `/v1/teams/{teamId}/members/{userId}`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddMembership'
+            examples:
+              member:
+                $ref: '#/components/examples/AddMembershipRequest'
+      responses:
+        '201':
+          description: Membership created.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+            Location:
+              $ref: '#/components/headers/Location'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Membership'
+              examples:
+                member:
+                  $ref: '#/components/examples/MembershipMember'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/ConflictAddMembership'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /teams/{teamId}/members/{userId}:
+    parameters:
+      - $ref: '#/components/parameters/TeamId'
+      - $ref: '#/components/parameters/UserId'
+    patch:
+      tags: [Memberships]
+      summary: Change a member's role
+      operationId: updateMembership
+      description: >-
+        Team admins only. Demoting the last admin is rejected atomically with `409` and code `last_admin`,
+        including under concurrent attempts. Unconditional (memberships carry no ETag). A user who is not a
+        member is `404`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateMembership'
+            examples:
+              promote:
+                $ref: '#/components/examples/UpdateMembershipRequest'
+      responses:
+        '200':
+          description: The updated membership.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Membership'
+              examples:
+                admin:
+                  $ref: '#/components/examples/MembershipAdmin'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/ConflictLastAdmin'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+    delete:
+      tags: [Memberships]
+      summary: Remove a member
+      operationId: removeMembership
+      description: >-
+        Team admins may remove any member; a non-admin may remove only their own membership (`403`
+        otherwise). Removing the last admin, including an admin leaving, is rejected atomically with `409`
+        and code `last_admin`. A missing membership is `404`.
+      responses:
+        '204':
+          description: Membership removed.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/ConflictLastAdmin'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /notes:
+    post:
+      tags: [Notes]
+      summary: Create a note
+      operationId: createNote
+      description: >-
+        Creates a private note owned by the caller. `title` is required; an omitted `body` defaults to `""`
+        and omitted `tags` to `[]`. The server assigns `id`, `authorId`, and timestamps; supplying them or any
+        unknown field is `422`. The response carries the note's initial strong `ETag`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateNote'
+            examples:
+              releaseChecklist:
+                $ref: '#/components/examples/CreateNoteRequest'
+      responses:
+        '201':
+          description: Note created. `Location` is `/v1/notes/{noteId}`; `ETag` is the note's version.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+            Location:
+              $ref: '#/components/headers/Location'
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Note'
+              examples:
+                created:
+                  $ref: '#/components/examples/NoteV1Owner'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+    get:
+      tags: [Notes]
+      summary: List or search accessible notes
+      operationId: listNotes
+      description: >-
+        Returns summaries (no `body`) of notes the caller may read, each exactly once regardless of
+        overlapping grants. Filters combine with AND, except that `q` matches title OR body using a
+        Unicode-aware, case-insensitive literal substring (no stemming, regular expressions, or query
+        language). `tag` may be repeated; every listed tag must be present (exact, case-sensitive). `scope`
+        defaults to `all`; `mine` selects owned notes and `shared` selects accessible non-owned notes. `state`
+        defaults to `active`; `trashed` always restricts to notes the caller owns, so
+        `scope=shared&state=trashed` is empty. `teamId` selects notes currently shared to that team and grants
+        nothing by itself; combined with `state=trashed` it is empty because trashing removes shares. Unknown
+        IDs yield an empty result. Sorted by `createdAt DESC, id DESC`. Authorization is re-evaluated on
+        every page; paging is a live view, not a snapshot.
+      parameters:
+        - $ref: '#/components/parameters/Query'
+        - $ref: '#/components/parameters/TagFilter'
+        - $ref: '#/components/parameters/NoteScopeFilter'
+        - $ref: '#/components/parameters/NoteStateFilter'
+        - $ref: '#/components/parameters/TeamIdFilter'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: One page of note summaries.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NoteSummaryPage'
+              examples:
+                page:
+                  $ref: '#/components/examples/NoteSummaryPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /notes/{noteId}:
+    parameters:
+      - $ref: '#/components/parameters/NoteId'
+    get:
+      tags: [Notes]
+      summary: Get a note
+      operationId: getNote
+      description: >-
+        The full note including `body`, with the note's strong `ETag`. Visible to the owner and to anyone
+        with current `read` through a direct or team share. A trashed note is visible to its owner only;
+        expired, hidden, and missing notes are all `404`. `isOwner` and `effectivePermissions` describe the
+        caller, never anyone else.
+      responses:
+        '200':
+          description: The note.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Note'
+              examples:
+                asOwner:
+                  $ref: '#/components/examples/NoteV1Owner'
+                asRecipient:
+                  $ref: '#/components/examples/NoteV1Proposer'
+                trashedAsOwner:
+                  $ref: '#/components/examples/NoteTrashedOwner'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+    patch:
+      tags: [Notes]
+      summary: Update note content or tags
+      operationId: updateNote
+      description: >-
+        Owner only; other readers receive `403`. Requires `If-Match` with the current note ETag. At least one
+        of `title`, `body`, or `tags` must be supplied; omitted properties are unchanged and a supplied `tags`
+        array replaces the previous one. A trashed note is `409` with code `note_not_active`. An effective
+        change advances the ETag and `updatedAt`; a no-op may return the existing representation and ETag.
+      parameters:
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateNote'
+            examples:
+              retitle:
+                $ref: '#/components/examples/UpdateNoteRequest'
+      responses:
+        '200':
+          description: The updated note with its new `ETag`.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Note'
+              examples:
+                updated:
+                  $ref: '#/components/examples/NoteV3Owner'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/ConflictNoteNotActive'
+        '412':
+          $ref: '#/components/responses/PreconditionFailed'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '428':
+          $ref: '#/components/responses/PreconditionRequired'
+    delete:
+      tags: [Notes]
+      summary: Move a note to the trash
+      operationId: trashNote
+      description: >-
+        Owner only. Requires `If-Match` with the current ETag. Atomically removes every share, sets
+        `deletedAt`, sets `expiresAt` to exactly 30 × 24 hours later, and advances the ETag and `updatedAt`.
+        Comments and edit requests are preserved but frozen. The `204` carries the new trash ETag so the
+        owner can restore without another read. Repeating the request with the trash ETag returns `204`
+        again without extending the recovery period.
+      parameters:
+        - $ref: '#/components/parameters/IfMatch'
+      responses:
+        '204':
+          description: Note trashed. `ETag` is the trashed note's version, needed for restore.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+            ETag:
+              $ref: '#/components/headers/ETag'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '412':
+          $ref: '#/components/responses/PreconditionFailed'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '428':
+          $ref: '#/components/responses/PreconditionRequired'
+
+  /notes/{noteId}/restore:
+    parameters:
+      - $ref: '#/components/parameters/NoteId'
+    post:
+      tags: [Notes]
+      summary: Restore a trashed note
+      operationId: restoreNote
+      description: >-
+        Owner only. Requires `If-Match` with the trash ETag. Clears `deletedAt` and `expiresAt`, advances the
+        ETag and `updatedAt` even when title and body are unchanged, preserves comments and edit-request
+        states, and leaves all shares absent: a restored note is private until re-shared. Open requests
+        reappear in the owner's inbox, but their proposers regain no access. Restoring an active note is
+        `409` with code `note_already_active`; at or after `expiresAt` the note is `404`. No request body.
+      parameters:
+        - $ref: '#/components/parameters/IfMatch'
+      responses:
+        '200':
+          description: The restored, now private note with its new `ETag`.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Note'
+              examples:
+                restored:
+                  $ref: '#/components/examples/NoteRestoredOwner'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/ConflictRestore'
+        '412':
+          $ref: '#/components/responses/PreconditionFailed'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '428':
+          $ref: '#/components/responses/PreconditionRequired'
+
+  /notes/{noteId}/shares:
+    parameters:
+      - $ref: '#/components/parameters/NoteId'
+    get:
+      tags: [Shares]
+      summary: List a note's shares
+      operationId: listShares
+      description: >-
+        Owner only; other readers receive `403`. A trashed note has no shares. Sorted by
+        `createdAt DESC, id DESC`.
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: One page of shares.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SharePage'
+              examples:
+                page:
+                  $ref: '#/components/examples/SharePage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+    post:
+      tags: [Shares]
+      summary: Share a note
+      operationId: createShare
+      description: >-
+        Owner only. Grants a user or a team, including teams the owner does not belong to. `permissions` may
+        contain `read`, `comment`, and `propose_edit` in any combination (at least one, no duplicates); the
+        server adds implied `read` and stores canonical order. Sharing to the owner or to an unknown
+        recipient is `422`; a second share for the same recipient is `409` with code `duplicate_share`; a
+        trashed note is `409` with code `note_not_active`. Shares carry no ETag.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateShare'
+            examples:
+              proposeEditToUser:
+                $ref: '#/components/examples/CreateShareRequest'
+      responses:
+        '201':
+          description: Share created with canonical permissions. `Location` is `/v1/notes/{noteId}/shares/{shareId}`.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+            Location:
+              $ref: '#/components/headers/Location'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Share'
+              examples:
+                proposeEditToUser:
+                  $ref: '#/components/examples/ShareProposeEdit'
+                readOnlyToTeam:
+                  $ref: '#/components/examples/ShareTeamRead'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/ConflictCreateShare'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          description: Schema violation, unknown field, unknown recipient, or the recipient is the note's owner.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+              examples:
+                validationFailed:
+                  $ref: '#/components/examples/ProblemValidationFailed'
+                shareToOwner:
+                  $ref: '#/components/examples/ProblemShareToOwner'
+
+  /notes/{noteId}/shares/{shareId}:
+    parameters:
+      - $ref: '#/components/parameters/NoteId'
+      - $ref: '#/components/parameters/ShareId'
+    get:
+      tags: [Shares]
+      summary: Get a share
+      operationId: getShare
+      description: Owner only. The share must belong to the note in the path; otherwise `404`.
+      responses:
+        '200':
+          description: The share.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Share'
+              examples:
+                share:
+                  $ref: '#/components/examples/ShareCommentProposeEdit'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+    patch:
+      tags: [Shares]
+      summary: Replace a share's permissions
+      operationId: updateShare
+      description: >-
+        Owner only. Replaces the permission set; it never appends. Recipient identity cannot be changed:
+        revoke and re-share instead. Unconditional, because shares carry no ETag. The share must belong to
+        the note in the path; otherwise `404`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateShare'
+            examples:
+              addComment:
+                $ref: '#/components/examples/UpdateShareRequest'
+      responses:
+        '200':
+          description: The share with its replaced, canonical permissions.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Share'
+              examples:
+                share:
+                  $ref: '#/components/examples/ShareCommentProposeEdit'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+    delete:
+      tags: [Shares]
+      summary: Revoke a share
+      operationId: deleteShare
+      description: >-
+        Owner only. Removes this grant; permissions supplied by other direct or team shares remain intact.
+        Already submitted edit requests survive revocation. The share must belong to the note in the path;
+        otherwise `404`.
+      responses:
+        '204':
+          description: Share revoked.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /notes/{noteId}/comments:
+    parameters:
+      - $ref: '#/components/parameters/NoteId'
+    get:
+      tags: [Comments]
+      summary: List comments
+      operationId: listComments
+      description: >-
+        Anyone who can read the note can read its comments, including users without `comment` permission.
+        Sorted by `createdAt ASC, id ASC`. A trashed note's comments are visible to the owner only.
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: One page of comments.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommentPage'
+              examples:
+                page:
+                  $ref: '#/components/examples/CommentPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+    post:
+      tags: [Comments]
+      summary: Add a comment
+      operationId: createComment
+      description: >-
+        Requires current `comment` permission (owners always have it); readers without it receive `403`.
+        The body is Markdown source, 1–10,000 code points and not blank. A trashed note is `409` with code
+        `note_not_active`. The response carries the comment's `ETag` and `Location`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateComment'
+            examples:
+              errorRate:
+                $ref: '#/components/examples/CreateCommentRequest'
+      responses:
+        '201':
+          description: Comment created. `Location` is `/v1/notes/{noteId}/comments/{commentId}`.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+            Location:
+              $ref: '#/components/headers/Location'
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Comment'
+              examples:
+                created:
+                  $ref: '#/components/examples/CommentExample'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/ConflictNoteNotActive'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /notes/{noteId}/comments/{commentId}:
+    parameters:
+      - $ref: '#/components/parameters/NoteId'
+      - $ref: '#/components/parameters/CommentId'
+    get:
+      tags: [Comments]
+      summary: Get a comment
+      operationId: getComment
+      description: >-
+        Readable by anyone who can read the note. The comment must belong to the note in the path;
+        otherwise `404`. Returns the comment's `ETag` for conditional edits.
+      responses:
+        '200':
+          description: The comment.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Comment'
+              examples:
+                comment:
+                  $ref: '#/components/examples/CommentExample'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+    patch:
+      tags: [Comments]
+      summary: Edit a comment
+      operationId: updateComment
+      description: >-
+        Only the comment's author, and only while holding current `comment` permission. The note owner
+        cannot rewrite someone else's comment (`403`). Requires `If-Match` with the comment ETag. A trashed
+        note is `409` with code `note_not_active`.
+      parameters:
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateComment'
+            examples:
+              edit:
+                $ref: '#/components/examples/UpdateCommentRequest'
+      responses:
+        '200':
+          description: The updated comment with its new `ETag`.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Comment'
+              examples:
+                comment:
+                  $ref: '#/components/examples/CommentExample'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/ConflictNoteNotActive'
+        '412':
+          $ref: '#/components/responses/PreconditionFailed'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '428':
+          $ref: '#/components/responses/PreconditionRequired'
+    delete:
+      tags: [Comments]
+      summary: Delete a comment
+      operationId: deleteComment
+      description: >-
+        The note owner may delete any comment; the author may delete their own while holding current
+        `comment` permission. Requires `If-Match` with the comment ETag. Deletion is permanent. A trashed
+        note is `409` with code `note_not_active`.
+      parameters:
+        - $ref: '#/components/parameters/IfMatch'
+      responses:
+        '204':
+          description: Comment deleted permanently.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/ConflictNoteNotActive'
+        '412':
+          $ref: '#/components/responses/PreconditionFailed'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '428':
+          $ref: '#/components/responses/PreconditionRequired'
+
+  /notes/{noteId}/edit-requests:
+    parameters:
+      - $ref: '#/components/parameters/NoteId'
+    post:
+      tags: [Edit requests]
+      summary: Submit an edit request
+      operationId: createEditRequest
+      description: >-
+        Requires current `propose_edit` permission; other readers receive `403`. The proposer supplies
+        `baseNoteETag` and a complete `proposedContent` (title and body; tags cannot be proposed) plus an
+        optional `explanation`. The server atomically checks permission, lifecycle, and that `baseNoteETag`
+        matches the live note, then captures the trusted current title and body as the immutable base
+        snapshot. A stale `baseNoteETag` is `412` and creates nothing; the client must fetch the current note
+        and reconcile. A proposal identical to the base is `422`. The note, its ETag, and its timestamps are
+        unchanged. `Location` is the flat canonical URL `/v1/edit-requests/{requestId}`; the response `ETag`
+        is the request's. An owner may submit a request against their own note.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateEditRequest'
+            examples:
+              addMetrics:
+                $ref: '#/components/examples/CreateEditRequestRequest'
+      responses:
+        '201':
+          description: Edit request created in the `open` state.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+            Location:
+              $ref: '#/components/headers/Location'
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EditRequest'
+              examples:
+                open:
+                  $ref: '#/components/examples/EditRequestOpen'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/ConflictNoteNotActive'
+        '412':
+          $ref: '#/components/responses/PreconditionFailed'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          description: Schema violation, unknown field, or a proposal identical to the base.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+              examples:
+                validationFailed:
+                  $ref: '#/components/examples/ProblemValidationFailed'
+                emptyProposal:
+                  $ref: '#/components/examples/ProblemEmptyProposal'
+    get:
+      tags: [Edit requests]
+      summary: List a note's edit requests
+      operationId: listNoteEditRequests
+      description: >-
+        Requests on this note that the caller may inspect: all of them for the owner, only their own for a
+        proposer with current read access, and none for other readers (an empty page, not `404`). `status`
+        selects exactly one status and defaults to `open`. Sorted by `createdAt DESC, id DESC`. Summaries
+        omit content and diffs; fetch the request for detail.
+      parameters:
+        - $ref: '#/components/parameters/RequestStatusFilter'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: One page of edit-request summaries.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EditRequestSummaryPage'
+              examples:
+                page:
+                  $ref: '#/components/examples/EditRequestSummaryPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /edit-requests:
+    get:
+      tags: [Edit requests]
+      summary: List the caller's edit-request inbox
+      operationId: listEditRequests
+      description: >-
+        `view=incoming` (default) lists requests on notes the caller owns; `view=outgoing` lists requests the
+        caller proposed on notes they can still read. `status` selects exactly one status (default `open`).
+        `state` filters by the associated note's lifecycle (default `active`); a trashed note's requests are
+        visible to its owner only, so `view=outgoing&state=trashed` is empty. This inbox is the notification
+        mechanism and is suitable for polling. Sorted by `createdAt DESC, id DESC`.
+      parameters:
+        - $ref: '#/components/parameters/InboxViewFilter'
+        - $ref: '#/components/parameters/RequestStatusFilter'
+        - $ref: '#/components/parameters/NoteStateFilter'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: One page of edit-request summaries.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EditRequestSummaryPage'
+              examples:
+                page:
+                  $ref: '#/components/examples/EditRequestSummaryPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /edit-requests/{requestId}:
+    parameters:
+      - $ref: '#/components/parameters/RequestId'
+    get:
+      tags: [Edit requests]
+      summary: Get an edit request
+      operationId: getEditRequest
+      description: >-
+        Visible only to the note owner and to the proposer while they retain read access to the note; every
+        other caller, including other note readers, receives `404`. Contains the immutable base snapshot, the
+        latest proposal, the explanation, the server-computed unified diff (`proposalDiff`), and, once
+        closed, the rejection reason or merge record. The `ETag` covers this representation.
+      responses:
+        '200':
+          description: The edit request.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EditRequest'
+              examples:
+                open:
+                  $ref: '#/components/examples/EditRequestOpen'
+                merged:
+                  $ref: '#/components/examples/EditRequestMerged'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+    patch:
+      tags: [Edit requests]
+      summary: Revise an open edit request
+      operationId: reviseEditRequest
+      description: >-
+        Proposer only, and only while holding current `propose_edit`; a proposer left with read-only access
+        receives `403`, as does the owner. Requires `If-Match` with the **request** ETag, not the note's. At
+        least one of `proposedContent` (complete title and body) or `explanation` (a string, or `null` to
+        clear it) is required. The base snapshot never changes; the diff is recomputed against it and the
+        request ETag advances on an effective change, while an identical resubmission is a no-op returning
+        the existing ETag. A proposal identical to the base is `422`. A closed request is `409` with code
+        `request_not_open`; a trashed note is `409` with code `note_not_active`.
+      parameters:
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReviseEditRequest'
+            examples:
+              revise:
+                $ref: '#/components/examples/ReviseEditRequestRequest'
+      responses:
+        '200':
+          description: The revised request with its new `ETag`.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EditRequest'
+              examples:
+                revised:
+                  $ref: '#/components/examples/EditRequestConflicting'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/ConflictRequestAction'
+        '412':
+          $ref: '#/components/responses/PreconditionFailed'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          description: Schema violation, unknown field, empty patch, or a proposal identical to the base.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+              examples:
+                validationFailed:
+                  $ref: '#/components/examples/ProblemValidationFailed'
+                emptyProposal:
+                  $ref: '#/components/examples/ProblemEmptyProposal'
+        '428':
+          $ref: '#/components/responses/PreconditionRequired'
+
+  /edit-requests/{requestId}/preview:
+    parameters:
+      - $ref: '#/components/parameters/RequestId'
+    post:
+      tags: [Edit requests]
+      summary: Preview a three-way merge
+      operationId: previewEditRequest
+      description: |
+        Owner only; the proposer receives `403`. Reads a coherent pair of note and request versions and
+        returns them as `currentNoteETag` and `requestETag`. Changes no data, timestamps, or versions and
+        reserves nothing. The body may be omitted or `{}`.
+
+        The preview compares **base** (the immutable snapshot captured at submission), **current** (the
+        live note), and **proposed** (the request's latest title and body).
+
+        * Title: if current equals proposed, keep it; otherwise, if one side equals the base, take the
+          changed side; otherwise report a title conflict with `baseRange: null`.
+        * Body: a deterministic line-based three-way text merge with Git-style conflict detection. Source
+          text and line endings are preserved; Markdown is never parsed, trimmed, or rewritten. Identical
+          edits are compatible. Incompatible changes to a common segment, including competing insertions at
+          the same location, are conflicts, and the server never silently favors one side.
+
+        Without `finalContent`, a clean merge returns `canMerge: true`, the complete `candidate`, empty
+        `conflicts`, and `mergeDiff`. Automatic conflicts are still a `200`: `canMerge: false`, null
+        `candidate` and `mergeDiff`, and structured `conflicts` whose body ranges are one-based, half-open
+        base-line coordinates (an empty range denotes an insertion).
+
+        With complete `finalContent`, that title and body become the candidate: `canMerge: true`,
+        `usedFinalContent: true`, `mergeDiff` from current to final, and any automatic conflicts retained for
+        review. Supplying final content is the only form of resolution; the server never infers it from
+        conflict-marker-like text in a note.
+
+        `proposalDiff` compares base to proposed with labels `base/title`, `proposed/title`, `base/body`, and
+        `proposed/body`; `mergeDiff` compares current to candidate with labels `current` and `candidate`.
+        Diffs use unified format with three context lines and standard missing-final-newline notation; an
+        unchanged field is an empty string, and a title is diffed as one line with a virtual terminating
+        newline. A closed request is `409` with code `request_not_open`; a trashed note is `409` with code
+        `note_not_active`.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PreviewEditRequest'
+            examples:
+              withOwnerEdits:
+                $ref: '#/components/examples/PreviewEditRequestRequest'
+      responses:
+        '200':
+          description: The preview. Conflicts are reported inside a successful response.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PreviewResult'
+              examples:
+                clean:
+                  $ref: '#/components/examples/PreviewClean'
+                withFinalContent:
+                  $ref: '#/components/examples/PreviewWithFinalContent'
+                conflict:
+                  $ref: '#/components/examples/PreviewConflict'
+                conflictResolved:
+                  $ref: '#/components/examples/PreviewConflictResolved'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/ConflictRequestAction'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /edit-requests/{requestId}/merge:
+    parameters:
+      - $ref: '#/components/parameters/RequestId'
+    post:
+      tags: [Edit requests]
+      summary: Merge an edit request into the note
+      operationId: mergeEditRequest
+      description: |
+        Owner only. Approval and merge are one action; there is no intermediate approved state. Requires
+        `If-Match` with the reviewed **request** ETag and `expectedNoteETag` with the reviewed **note** ETag.
+
+        Without `finalContent`, the server recomputes the clean three-way candidate for exactly those
+        versions; unresolved automatic conflicts are `409` with code `merge_conflict`. With complete
+        `finalContent`, that explicitly approved content, including owner edits or conflict resolutions, is
+        committed instead.
+
+        In one transaction the server rechecks owner authorization, both versions, active-note and
+        open-request state, and content validation; updates only the note's title and body; preserves tags
+        and ownership; advances the note ETag and `updatedAt` even if the candidate equals live content;
+        records the merged content, resulting note ETag, merger, and time in `mergeRecord`; and closes the
+        request as `merged` while preserving `proposedContent` and `proposalDiff`. Any failed check leaves
+        both resources untouched. A stale request or note version is `412`; a competing merge that lost the
+        version race is therefore `412`. Merging one request does not close or rebase others.
+
+        The response `ETag` is the closed request's. Repeating the call with the old request ETag cannot merge
+        twice. After a lost response, read the request: a `merged` record supplies the committed result and
+        attribution.
+      parameters:
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MergeEditRequest'
+            examples:
+              unchangedProposal:
+                $ref: '#/components/examples/MergeEditRequestPlain'
+              withOwnerEdits:
+                $ref: '#/components/examples/MergeEditRequestWithFinalContent'
+      responses:
+        '200':
+          description: Merged. Contains the updated note, its new ETag, and the closed request.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MergeResult'
+              examples:
+                merged:
+                  $ref: '#/components/examples/MergeResultExample'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/ConflictMerge'
+        '412':
+          $ref: '#/components/responses/PreconditionFailed'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '428':
+          $ref: '#/components/responses/PreconditionRequired'
+
+  /edit-requests/{requestId}/reject:
+    parameters:
+      - $ref: '#/components/parameters/RequestId'
+    post:
+      tags: [Edit requests]
+      summary: Reject an edit request
+      operationId: rejectEditRequest
+      description: >-
+        Owner only; the proposer receives `403`. Requires `If-Match` with the request ETag. Closes the
+        request as `rejected` with an optional `reason` of at most 10,000 code points; the note is
+        unchanged. The body may be omitted. A closed request is `409` with code `request_not_open`; a
+        trashed note is `409` with code `note_not_active`.
+      parameters:
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RejectEditRequest'
+            examples:
+              withReason:
+                $ref: '#/components/examples/RejectEditRequestRequest'
+      responses:
+        '200':
+          description: The rejected request with its new `ETag`.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EditRequest'
+              examples:
+                rejected:
+                  $ref: '#/components/examples/EditRequestRejected'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/ConflictRequestAction'
+        '412':
+          $ref: '#/components/responses/PreconditionFailed'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '428':
+          $ref: '#/components/responses/PreconditionRequired'
+
+  /edit-requests/{requestId}/withdraw:
+    parameters:
+      - $ref: '#/components/parameters/RequestId'
+    post:
+      tags: [Edit requests]
+      summary: Withdraw an edit request
+      operationId: withdrawEditRequest
+      description: >-
+        Proposer only, while they retain current read access to the note; `propose_edit` is not required,
+        and without read access the request is `404`. The owner receives `403`. Requires `If-Match` with the
+        request ETag. Closes the request as `withdrawn`; the note is unchanged. No request body. A closed
+        request is `409` with code `request_not_open`; a trashed note is `409` with code `note_not_active`.
+      parameters:
+        - $ref: '#/components/parameters/IfMatch'
+      responses:
+        '200':
+          description: The withdrawn request with its new `ETag`.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EditRequest'
+              examples:
+                withdrawn:
+                  $ref: '#/components/examples/EditRequestWithdrawn'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/ConflictRequestAction'
+        '412':
+          $ref: '#/components/responses/PreconditionFailed'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '428':
+          $ref: '#/components/responses/PreconditionRequired'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: >-
+        External identity provider **access token** (JWT or opaque), never an ID token. The deployment
+        configures trusted issuers, audience, verification or introspection, expiry, and provider-supported
+        revocation checks. Team permissions are never derived from token role claims; the service uses
+        current local memberships and shares. A missing or invalid token is `401` with a bearer
+        `WWW-Authenticate` challenge.
+
+  headers:
+    CacheControl:
+      description: Always `no-store`. Present on every response, including errors, so HTTP caches never serve protected content after access changes.
+      required: true
+      schema:
+        type: string
+        const: no-store
+    ETag:
+      description: Strong, opaque, quoted validator of the returned representation. Echo it in `If-Match` (or in `baseNoteETag` / `expectedNoteETag`) for conditional mutations.
+      required: true
+      schema:
+        $ref: '#/components/schemas/StrongETag'
+    Location:
+      description: Canonical URL of the created resource, relative to the origin and including the `/v1` prefix (for example `/v1/notes/44444444-4444-4444-8444-444444444444`).
+      required: true
+      schema:
+        type: string
+        format: uri-reference
+    WWWAuthenticate:
+      description: Bearer challenge per RFC 6750.
+      required: true
+      schema:
+        type: string
+        examples:
+          - 'Bearer realm="notes-api"'
+          - 'Bearer realm="notes-api", error="invalid_token"'
+
+  parameters:
+    UserId:
+      name: userId
+      in: path
+      required: true
+      description: User ID.
+      schema:
+        $ref: '#/components/schemas/Uuid'
+    TeamId:
+      name: teamId
+      in: path
+      required: true
+      description: Team ID.
+      schema:
+        $ref: '#/components/schemas/Uuid'
+    NoteId:
+      name: noteId
+      in: path
+      required: true
+      description: Note ID.
+      schema:
+        $ref: '#/components/schemas/Uuid'
+    ShareId:
+      name: shareId
+      in: path
+      required: true
+      description: Share ID. Must belong to the note in the same path.
+      schema:
+        $ref: '#/components/schemas/Uuid'
+    CommentId:
+      name: commentId
+      in: path
+      required: true
+      description: Comment ID. Must belong to the note in the same path.
+      schema:
+        $ref: '#/components/schemas/Uuid'
+    RequestId:
+      name: requestId
+      in: path
+      required: true
+      description: Edit request ID.
+      schema:
+        $ref: '#/components/schemas/Uuid'
+    Limit:
+      name: limit
+      in: query
+      description: Page size. Default 25, minimum 1, maximum 100; out-of-range values are `422`.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 25
+    Cursor:
+      name: cursor
+      in: query
+      description: >-
+        Opaque continuation token from a previous page's `nextCursor`. It is bound to the caller, the
+        collection, the filters, and the limit, so continue with identical query settings. Invalid, expired,
+        tampered, or mismatched cursors are `400` with code `invalid_cursor`.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 4096
+    Query:
+      name: q
+      in: query
+      description: Unicode-aware, case-insensitive literal substring matched against the title OR the body. 1–200 code points.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 200
+    TagFilter:
+      name: tag
+      in: query
+      description: Exact, case-sensitive tag. Repeat the parameter to require several tags (AND). At most 10 values.
+      style: form
+      explode: true
+      schema:
+        type: array
+        minItems: 1
+        maxItems: 10
+        uniqueItems: true
+        items:
+          $ref: '#/components/schemas/Tag'
+    NoteScopeFilter:
+      name: scope
+      in: query
+      description: '`all` (default), `mine` for owned notes, or `shared` for accessible notes owned by others.'
+      schema:
+        $ref: '#/components/schemas/NoteScope'
+        default: all
+    NoteStateFilter:
+      name: state
+      in: query
+      description: '`active` (default) or `trashed`. Trashed notes are only ever visible to their owner.'
+      schema:
+        $ref: '#/components/schemas/NoteState'
+        default: active
+    TeamIdFilter:
+      name: teamId
+      in: query
+      description: Only notes that currently have a share addressed to this team. Grants no access by itself.
+      schema:
+        $ref: '#/components/schemas/Uuid'
+    TeamScopeFilter:
+      name: scope
+      in: query
+      description: '`all` (default) for every team in the workspace, or `mine` for teams the caller belongs to.'
+      schema:
+        $ref: '#/components/schemas/TeamScope'
+        default: all
+    InboxViewFilter:
+      name: view
+      in: query
+      description: '`incoming` (default) for requests on notes the caller owns; `outgoing` for requests the caller proposed.'
+      schema:
+        $ref: '#/components/schemas/InboxView'
+        default: incoming
+    RequestStatusFilter:
+      name: status
+      in: query
+      description: Exactly one request status. Defaults to `open`.
+      schema:
+        $ref: '#/components/schemas/EditRequestStatus'
+        default: open
+    IfMatch:
+      name: If-Match
+      in: header
+      required: true
+      description: >-
+        Exactly one strong ETag of the resource being mutated, as returned in a previous `ETag` header
+        (quotes included). Weak tags, `*`, and lists are `400` with code `malformed_request`. Omitting the
+        header is `428`; a value that no longer matches is `412`.
+      schema:
+        $ref: '#/components/schemas/StrongETag'
+
+  responses:
+    BadRequest:
+      description: Malformed JSON, malformed `If-Match` header, or invalid cursor.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControl'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          examples:
+            malformedJson:
+              $ref: '#/components/examples/ProblemMalformedRequest'
+            malformedIfMatch:
+              $ref: '#/components/examples/ProblemMalformedIfMatch'
+            invalidCursor:
+              $ref: '#/components/examples/ProblemInvalidCursor'
+    Unauthorized:
+      description: Missing, expired, revoked, or otherwise invalid access token.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControl'
+        WWW-Authenticate:
+          $ref: '#/components/headers/WWWAuthenticate'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          examples:
+            unauthenticated:
+              $ref: '#/components/examples/ProblemUnauthenticated'
+    Forbidden:
+      description: The caller can see the resource but may not perform this operation on it.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControl'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          examples:
+            forbidden:
+              $ref: '#/components/examples/ProblemForbidden'
+    NotFound:
+      description: Missing, hidden, expired, or incorrectly nested resource. Indistinguishable from a resource the caller may not discover.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControl'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          examples:
+            notFound:
+              $ref: '#/components/examples/ProblemNotFound'
+    PreconditionFailed:
+      description: The supplied version (`If-Match`, `baseNoteETag`, or `expectedNoteETag`) no longer matches the current resource. Fetch the current representation and reconcile before retrying.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControl'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          examples:
+            preconditionFailed:
+              $ref: '#/components/examples/ProblemPreconditionFailed'
+    PreconditionRequired:
+      description: The required `If-Match` header is missing.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControl'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          examples:
+            preconditionRequired:
+              $ref: '#/components/examples/ProblemPreconditionRequired'
+    UnsupportedMediaType:
+      description: The request body is not `application/json`.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControl'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          examples:
+            unsupportedMediaType:
+              $ref: '#/components/examples/ProblemUnsupportedMediaType'
+    UnprocessableEntity:
+      description: Schema or field violation in the body or in a query, header, or path parameter; unknown input field; or other invalid content. `errors` lists each issue.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControl'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          examples:
+            bodyViolation:
+              $ref: '#/components/examples/ProblemValidationFailed'
+            queryViolation:
+              $ref: '#/components/examples/ProblemQueryValidationFailed'
+    ConflictNoteNotActive:
+      description: The note is in the trash; all mutations require an active note.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControl'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          examples:
+            noteNotActive:
+              $ref: '#/components/examples/ProblemNoteNotActive'
+    ConflictRestore:
+      description: The note is already active.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControl'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          examples:
+            noteAlreadyActive:
+              $ref: '#/components/examples/ProblemNoteAlreadyActive'
+    ConflictRequestAction:
+      description: The request is already closed (`request_not_open`) or its note is in the trash (`note_not_active`).
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControl'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          examples:
+            requestNotOpen:
+              $ref: '#/components/examples/ProblemRequestNotOpen'
+            noteNotActive:
+              $ref: '#/components/examples/ProblemNoteNotActive'
+    ConflictMerge:
+      description: Unresolved automatic conflicts (`merge_conflict`), a closed request (`request_not_open`), or a trashed note (`note_not_active`). Nothing was changed.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControl'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          examples:
+            mergeConflict:
+              $ref: '#/components/examples/ProblemMergeConflict'
+            requestNotOpen:
+              $ref: '#/components/examples/ProblemRequestNotOpen'
+            noteNotActive:
+              $ref: '#/components/examples/ProblemNoteNotActive'
+    ConflictCreateShare:
+      description: A share for this recipient already exists (`duplicate_share`) or the note is in the trash (`note_not_active`).
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControl'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          examples:
+            duplicateShare:
+              $ref: '#/components/examples/ProblemDuplicateShare'
+            noteNotActive:
+              $ref: '#/components/examples/ProblemNoteNotActive'
+    ConflictAddMembership:
+      description: The user is already a member of the team.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControl'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          examples:
+            duplicateMembership:
+              $ref: '#/components/examples/ProblemDuplicateMembership'
+    ConflictLastAdmin:
+      description: The change would leave the team without an admin.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControl'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          examples:
+            lastAdmin:
+              $ref: '#/components/examples/ProblemLastAdmin'
+
+  schemas:
+    # ---- Primitives ---------------------------------------------------------
+    Uuid:
+      type: string
+      format: uuid
+      pattern: '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+      description: Server-assigned UUID.
+      examples:
+        - 44444444-4444-4444-8444-444444444444
+    Timestamp:
+      type: string
+      format: date-time
+      pattern: '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?Z$'
+      description: RFC 3339 UTC instant, always ending in `Z`.
+      examples:
+        - '2026-09-10T14:00:00Z'
+    StrongETag:
+      type: string
+      pattern: '^"[\x21\x23-\x7E]+"$'
+      minLength: 3
+      maxLength: 256
+      description: >-
+        One quoted strong entity tag exactly as returned in an `ETag` header, quotes included. Weak tags,
+        `*`, and lists are rejected. Versions are opaque; clients never compute or increment them.
+      examples:
+        - '"note-v1"'
+    NoteTitle:
+      type: string
+      minLength: 1
+      maxLength: 200
+      pattern: '\S'
+      description: 1–200 Unicode code points containing at least one non-whitespace character.
+    NoteBody:
+      type: string
+      minLength: 0
+      maxLength: 1000000
+      description: Markdown source, 0–1,000,000 Unicode code points. Stored as text with whitespace preserved; never rendered by the API.
+    Tag:
+      type: string
+      minLength: 1
+      maxLength: 64
+      pattern: '^\S(?:[^\r\n]*\S)?$'
+      description: Case-sensitive tag of 1–64 code points with no leading or trailing whitespace and no newlines.
+    TagList:
+      type: array
+      items:
+        $ref: '#/components/schemas/Tag'
+      maxItems: 50
+      uniqueItems: true
+      description: At most 50 unique tags. Order is retained as supplied.
+    CommentBody:
+      type: string
+      minLength: 1
+      maxLength: 10000
+      pattern: '\S'
+      description: Markdown source, 1–10,000 code points, not blank.
+    Explanation:
+      type: [string, 'null']
+      maxLength: 10000
+      description: Proposer's explanation of an edit request, at most 10,000 code points. `null` means none.
+    RejectionReason:
+      type: [string, 'null']
+      maxLength: 10000
+      description: Owner's reason for rejecting a request, at most 10,000 code points. `null` means none.
+    TeamName:
+      type: string
+      minLength: 1
+      maxLength: 100
+      pattern: '\S'
+      description: 1–100 code points, not blank. Need not be unique.
+    DisplayName:
+      type: string
+      minLength: 1
+      maxLength: 200
+      description: Display name taken from the identity provider at provisioning time.
+
+    # ---- Enumerations -------------------------------------------------------
+    Role:
+      type: string
+      enum: [admin, member]
+      description: Team role. Every existing team has at least one `admin`.
+    Permission:
+      type: string
+      enum: [read, comment, propose_edit]
+      description: >-
+        Independent note capability. `read` covers the note and its comments; `comment` allows creating and
+        managing one's own comments; `propose_edit` allows submitting and revising edit requests. None of
+        them allows direct edits, sharing, trashing, previewing, merging, or rejecting; those belong to the
+        owner alone.
+    PermissionInput:
+      type: array
+      items:
+        $ref: '#/components/schemas/Permission'
+      minItems: 1
+      maxItems: 3
+      uniqueItems: true
+      description: Permissions to grant, in any order. `read` is implied and added when omitted; `['read']` alone creates a read-only share. An empty set is invalid; revoke the share instead.
+    PermissionSet:
+      type: array
+      items:
+        $ref: '#/components/schemas/Permission'
+      enum:
+        - [read]
+        - [read, comment]
+        - [read, propose_edit]
+        - [read, comment, propose_edit]
+      description: Canonical effective permissions in the fixed order `read`, `comment`, `propose_edit`, omitting ungranted capabilities. Always contains `read`.
+    RecipientType:
+      type: string
+      enum: [user, team]
+    EditRequestStatus:
+      type: string
+      enum: [open, merged, rejected, withdrawn]
+      description: '`open` is the only mutable state; the three closed states are immutable and cannot be reopened.'
+    NoteState:
+      type: string
+      enum: [active, trashed]
+    NoteScope:
+      type: string
+      enum: [all, mine, shared]
+    TeamScope:
+      type: string
+      enum: [all, mine]
+    InboxView:
+      type: string
+      enum: [incoming, outgoing]
+    ConflictField:
+      type: string
+      enum: [title, body]
+    ErrorLocation:
+      type: string
+      enum: [body, query, header, path]
+    ErrorCode:
+      type: string
+      description: Stable machine-readable error code. Clients branch on `code`, never on `detail`.
+      enum:
+        - unauthenticated
+        - forbidden
+        - not_found
+        - malformed_request
+        - invalid_cursor
+        - unsupported_media_type
+        - validation_failed
+        - precondition_required
+        - precondition_failed
+        - note_not_active
+        - note_already_active
+        - request_not_open
+        - duplicate_membership
+        - duplicate_share
+        - last_admin
+        - merge_conflict
+
+    # ---- Request bodies (unknown fields rejected) ---------------------------
+    CreateTeam:
+      type: object
+      additionalProperties: false
+      required: [name]
+      properties:
+        name:
+          $ref: '#/components/schemas/TeamName'
+    UpdateTeam:
+      type: object
+      additionalProperties: false
+      required: [name]
+      properties:
+        name:
+          $ref: '#/components/schemas/TeamName'
+    AddMembership:
+      type: object
+      additionalProperties: false
+      required: [userId]
+      properties:
+        userId:
+          $ref: '#/components/schemas/Uuid'
+        role:
+          $ref: '#/components/schemas/Role'
+          default: member
+    UpdateMembership:
+      type: object
+      additionalProperties: false
+      required: [role]
+      properties:
+        role:
+          $ref: '#/components/schemas/Role'
+    CreateNote:
+      type: object
+      additionalProperties: false
+      required: [title]
+      properties:
+        title:
+          $ref: '#/components/schemas/NoteTitle'
+        body:
+          $ref: '#/components/schemas/NoteBody'
+          default: ''
+        tags:
+          $ref: '#/components/schemas/TagList'
+          default: []
+    UpdateNote:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      description: Partial update. Omitted properties are unchanged; a supplied `tags` array replaces the previous one. Null is rejected.
+      properties:
+        title:
+          $ref: '#/components/schemas/NoteTitle'
+        body:
+          $ref: '#/components/schemas/NoteBody'
+        tags:
+          $ref: '#/components/schemas/TagList'
+    Recipient:
+      type: object
+      additionalProperties: false
+      required: [type, id]
+      properties:
+        type:
+          $ref: '#/components/schemas/RecipientType'
+        id:
+          $ref: '#/components/schemas/Uuid'
+    CreateShare:
+      type: object
+      additionalProperties: false
+      required: [recipient, permissions]
+      properties:
+        recipient:
+          $ref: '#/components/schemas/Recipient'
+        permissions:
+          $ref: '#/components/schemas/PermissionInput'
+    UpdateShare:
+      type: object
+      additionalProperties: false
+      required: [permissions]
+      description: Replaces the permission set. The recipient cannot be changed.
+      properties:
+        permissions:
+          $ref: '#/components/schemas/PermissionInput'
+    CreateComment:
+      type: object
+      additionalProperties: false
+      required: [body]
+      properties:
+        body:
+          $ref: '#/components/schemas/CommentBody'
+    UpdateComment:
+      type: object
+      additionalProperties: false
+      required: [body]
+      properties:
+        body:
+          $ref: '#/components/schemas/CommentBody'
+    Content:
+      type: object
+      additionalProperties: false
+      required: [title, body]
+      description: A complete title and body. Used for proposals, base snapshots, candidates, final content, and merge records. Tags are never part of it.
+      properties:
+        title:
+          $ref: '#/components/schemas/NoteTitle'
+        body:
+          $ref: '#/components/schemas/NoteBody'
+    CreateEditRequest:
+      type: object
+      additionalProperties: false
+      required: [baseNoteETag, proposedContent]
+      properties:
+        baseNoteETag:
+          $ref: '#/components/schemas/StrongETag'
+          description: The note ETag the proposer read. Must match the live note or the request is `412`.
+        proposedContent:
+          $ref: '#/components/schemas/Content'
+        explanation:
+          $ref: '#/components/schemas/Explanation'
+    ReviseEditRequest:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      description: At least one property. `proposedContent` must be complete; `explanation` may be `null` to clear it.
+      properties:
+        proposedContent:
+          $ref: '#/components/schemas/Content'
+        explanation:
+          $ref: '#/components/schemas/Explanation'
+    PreviewEditRequest:
+      type: object
+      additionalProperties: false
+      description: Optional owner-supplied complete final content. An empty object previews the automatic merge.
+      properties:
+        finalContent:
+          $ref: '#/components/schemas/Content'
+    MergeEditRequest:
+      type: object
+      additionalProperties: false
+      required: [expectedNoteETag]
+      properties:
+        expectedNoteETag:
+          $ref: '#/components/schemas/StrongETag'
+          description: The reviewed note ETag. The request ETag travels in `If-Match`.
+        finalContent:
+          $ref: '#/components/schemas/Content'
+          description: Complete owner-approved title and body. When omitted, the clean automatic candidate is merged.
+    RejectEditRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        reason:
+          $ref: '#/components/schemas/RejectionReason'
+
+    # ---- Resources ----------------------------------------------------------
+    User:
+      type: object
+      additionalProperties: false
+      required: [id, displayName, createdAt]
+      properties:
+        id:
+          $ref: '#/components/schemas/Uuid'
+        displayName:
+          $ref: '#/components/schemas/DisplayName'
+        createdAt:
+          $ref: '#/components/schemas/Timestamp'
+    Team:
+      type: object
+      additionalProperties: false
+      required: [id, name, createdAt, updatedAt]
+      properties:
+        id:
+          $ref: '#/components/schemas/Uuid'
+        name:
+          $ref: '#/components/schemas/TeamName'
+        createdAt:
+          $ref: '#/components/schemas/Timestamp'
+        updatedAt:
+          $ref: '#/components/schemas/Timestamp'
+    Membership:
+      type: object
+      additionalProperties: false
+      required: [teamId, userId, role, joinedAt, updatedAt]
+      properties:
+        teamId:
+          $ref: '#/components/schemas/Uuid'
+        userId:
+          $ref: '#/components/schemas/Uuid'
+        role:
+          $ref: '#/components/schemas/Role'
+        joinedAt:
+          $ref: '#/components/schemas/Timestamp'
+        updatedAt:
+          $ref: '#/components/schemas/Timestamp'
+          description: Advances when the role changes.
+    NoteFields:
+      type: object
+      description: Fields shared by `NoteSummary` and `Note`. Not used directly.
+      required: [id, authorId, title, tags, createdAt, updatedAt, deletedAt, expiresAt, isOwner, effectivePermissions]
+      properties:
+        id:
+          $ref: '#/components/schemas/Uuid'
+        authorId:
+          $ref: '#/components/schemas/Uuid'
+          description: The immutable owner.
+        title:
+          $ref: '#/components/schemas/NoteTitle'
+        tags:
+          $ref: '#/components/schemas/TagList'
+        createdAt:
+          $ref: '#/components/schemas/Timestamp'
+        updatedAt:
+          $ref: '#/components/schemas/Timestamp'
+          description: Advances with content, tag, merge, trash, and restore changes; never with shares, comments, or requests.
+        deletedAt:
+          description: When the note was trashed, or `null` while active.
+          anyOf:
+            - $ref: '#/components/schemas/Timestamp'
+            - type: 'null'
+        expiresAt:
+          description: '`deletedAt` plus exactly 30 × 24 hours, or `null` while active. At or after this instant the note is `404` for everyone.'
+          anyOf:
+            - $ref: '#/components/schemas/Timestamp'
+            - type: 'null'
+        isOwner:
+          type: boolean
+          description: Whether the caller is the note's owner.
+        effectivePermissions:
+          $ref: '#/components/schemas/PermissionSet'
+          description: The caller's effective permissions from the union of direct and team shares. The owner always sees all three.
+    NoteSummary:
+      description: A note without its body, as returned by list operations. Versions are not included; fetch the note for its ETag.
+      allOf:
+        - $ref: '#/components/schemas/NoteFields'
+      unevaluatedProperties: false
+    Note:
+      description: A full note. The response `ETag` covers content, tags, and lifecycle metadata.
+      allOf:
+        - $ref: '#/components/schemas/NoteFields'
+        - type: object
+          required: [body]
+          properties:
+            body:
+              $ref: '#/components/schemas/NoteBody'
+      unevaluatedProperties: false
+    Share:
+      type: object
+      additionalProperties: false
+      required: [id, noteId, recipient, permissions, createdAt, updatedAt]
+      properties:
+        id:
+          $ref: '#/components/schemas/Uuid'
+        noteId:
+          $ref: '#/components/schemas/Uuid'
+        recipient:
+          $ref: '#/components/schemas/Recipient'
+        permissions:
+          $ref: '#/components/schemas/PermissionSet'
+        createdAt:
+          $ref: '#/components/schemas/Timestamp'
+        updatedAt:
+          $ref: '#/components/schemas/Timestamp'
+    Comment:
+      type: object
+      additionalProperties: false
+      required: [id, noteId, authorId, body, createdAt, updatedAt]
+      description: Flat Markdown comment. Authorship is immutable. The response `ETag` covers this representation.
+      properties:
+        id:
+          $ref: '#/components/schemas/Uuid'
+        noteId:
+          $ref: '#/components/schemas/Uuid'
+        authorId:
+          $ref: '#/components/schemas/Uuid'
+        body:
+          $ref: '#/components/schemas/CommentBody'
+        createdAt:
+          $ref: '#/components/schemas/Timestamp'
+        updatedAt:
+          $ref: '#/components/schemas/Timestamp'
+    EditRequestFields:
+      type: object
+      description: Fields shared by `EditRequestSummary` and `EditRequest`. Not used directly.
+      required: [id, noteId, noteTitle, proposerId, status, createdAt, updatedAt, closedAt]
+      properties:
+        id:
+          $ref: '#/components/schemas/Uuid'
+        noteId:
+          $ref: '#/components/schemas/Uuid'
+        noteTitle:
+          $ref: '#/components/schemas/NoteTitle'
+          description: The note's current live title, denormalized so inboxes render without extra reads.
+        proposerId:
+          $ref: '#/components/schemas/Uuid'
+        status:
+          $ref: '#/components/schemas/EditRequestStatus'
+        createdAt:
+          $ref: '#/components/schemas/Timestamp'
+        updatedAt:
+          $ref: '#/components/schemas/Timestamp'
+          description: Advances on revision and on closing.
+        closedAt:
+          description: When the request was merged, rejected, or withdrawn; `null` while open.
+          anyOf:
+            - $ref: '#/components/schemas/Timestamp'
+            - type: 'null'
+    EditRequestSummary:
+      description: Inbox entry. Omits content and diffs.
+      allOf:
+        - $ref: '#/components/schemas/EditRequestFields'
+        - if:
+            properties:
+              status:
+                const: open
+          then:
+            properties:
+              closedAt:
+                type: 'null'
+          else:
+            properties:
+              closedAt:
+                $ref: '#/components/schemas/Timestamp'
+      unevaluatedProperties: false
+    EditRequest:
+      description: >-
+        Full edit request. `baseContent` is the immutable snapshot captured at submission; `proposedContent`
+        is the latest proposal; `proposalDiff` compares the two. Closed requests keep both, plus a
+        `rejectionReason` or `mergeRecord`. The response `ETag` covers this representation.
+      allOf:
+        - $ref: '#/components/schemas/EditRequestFields'
+        - type: object
+          required: [baseContent, proposedContent, explanation, proposalDiff, rejectionReason, mergeRecord]
+          properties:
+            baseContent:
+              $ref: '#/components/schemas/Content'
+              description: Trusted server snapshot of the note when the request was submitted. Never changes.
+            proposedContent:
+              $ref: '#/components/schemas/Content'
+              description: The latest submitted proposal. Owner edits at merge time never replace it.
+            explanation:
+              $ref: '#/components/schemas/Explanation'
+            proposalDiff:
+              $ref: '#/components/schemas/FieldDiff'
+              description: Unified diff from base to proposed, labelled `base/title`, `proposed/title`, `base/body`, `proposed/body`.
+            rejectionReason:
+              $ref: '#/components/schemas/RejectionReason'
+            mergeRecord:
+              description: Present only once merged.
+              anyOf:
+                - $ref: '#/components/schemas/MergeRecord'
+                - type: 'null'
+        - if:
+            properties:
+              status:
+                const: open
+          then:
+            properties:
+              closedAt:
+                type: 'null'
+              rejectionReason:
+                type: 'null'
+              mergeRecord:
+                type: 'null'
+        - if:
+            properties:
+              status:
+                const: merged
+          then:
+            properties:
+              closedAt:
+                $ref: '#/components/schemas/Timestamp'
+              rejectionReason:
+                type: 'null'
+              mergeRecord:
+                $ref: '#/components/schemas/MergeRecord'
+        - if:
+            properties:
+              status:
+                const: rejected
+          then:
+            properties:
+              closedAt:
+                $ref: '#/components/schemas/Timestamp'
+              mergeRecord:
+                type: 'null'
+        - if:
+            properties:
+              status:
+                const: withdrawn
+          then:
+            properties:
+              closedAt:
+                $ref: '#/components/schemas/Timestamp'
+              rejectionReason:
+                type: 'null'
+              mergeRecord:
+                type: 'null'
+      unevaluatedProperties: false
+    MergeRecord:
+      type: object
+      additionalProperties: false
+      required: [content, noteETag, mergedBy, mergedAt]
+      description: What was actually written at merge time, kept separately from the submitted proposal.
+      properties:
+        content:
+          $ref: '#/components/schemas/Content'
+          description: The committed title and body, including any owner edits.
+        noteETag:
+          $ref: '#/components/schemas/StrongETag'
+          description: The note ETag produced by the merge.
+        mergedBy:
+          $ref: '#/components/schemas/Uuid'
+        mergedAt:
+          $ref: '#/components/schemas/Timestamp'
+    FieldDiff:
+      type: object
+      additionalProperties: false
+      required: [title, body]
+      description: Unified diffs (three context lines, standard missing-final-newline notation) per field. An unchanged field is the empty string.
+      properties:
+        title:
+          type: string
+        body:
+          type: string
+    LineRange:
+      type: object
+      additionalProperties: false
+      required: [start, end]
+      description: One-based, half-open range of base body lines `[start, end)`. `start == end` denotes an insertion before line `start`.
+      properties:
+        start:
+          type: integer
+          minimum: 1
+        end:
+          type: integer
+          minimum: 1
+    Conflict:
+      type: object
+      additionalProperties: false
+      required: [field, baseRange, base, current, proposed]
+      description: An incompatible change that needs owner resolution. Segments are raw source text.
+      properties:
+        field:
+          $ref: '#/components/schemas/ConflictField'
+        baseRange:
+          description: Base-line coordinates for body conflicts; `null` for a title conflict.
+          anyOf:
+            - $ref: '#/components/schemas/LineRange'
+            - type: 'null'
+        base:
+          type: string
+        current:
+          type: string
+        proposed:
+          type: string
+      allOf:
+        - if:
+            properties:
+              field:
+                const: title
+          then:
+            properties:
+              baseRange:
+                type: 'null'
+          else:
+            properties:
+              baseRange:
+                $ref: '#/components/schemas/LineRange'
+    PreviewResult:
+      type: object
+      additionalProperties: false
+      required: [requestETag, currentNoteETag, canMerge, usedFinalContent, candidate, conflicts, proposalDiff, mergeDiff]
+      description: Outcome of a three-way preview. Read-only; nothing is reserved or changed.
+      properties:
+        requestETag:
+          $ref: '#/components/schemas/StrongETag'
+          description: The request version previewed. Send it as `If-Match` on merge.
+        currentNoteETag:
+          $ref: '#/components/schemas/StrongETag'
+          description: The note version previewed. Send it as `expectedNoteETag` on merge.
+        canMerge:
+          type: boolean
+        usedFinalContent:
+          type: boolean
+          description: True when the candidate is the owner-supplied `finalContent`.
+        candidate:
+          description: The complete merged title and body, or `null` when automatic conflicts remain unresolved.
+          anyOf:
+            - $ref: '#/components/schemas/Content'
+            - type: 'null'
+        conflicts:
+          type: array
+          items:
+            $ref: '#/components/schemas/Conflict'
+          description: Automatic conflicts. Retained for review even when `finalContent` resolves them.
+        proposalDiff:
+          $ref: '#/components/schemas/FieldDiff'
+          description: Base to proposed.
+        mergeDiff:
+          description: Current to candidate (`current` and `candidate` labels), or `null` when there is no candidate.
+          anyOf:
+            - $ref: '#/components/schemas/FieldDiff'
+            - type: 'null'
+      allOf:
+        - if:
+            properties:
+              canMerge:
+                const: false
+          then:
+            properties:
+              usedFinalContent:
+                const: false
+              candidate:
+                type: 'null'
+              mergeDiff:
+                type: 'null'
+              conflicts:
+                minItems: 1
+          else:
+            properties:
+              candidate:
+                $ref: '#/components/schemas/Content'
+              mergeDiff:
+                $ref: '#/components/schemas/FieldDiff'
+        - if:
+            properties:
+              usedFinalContent:
+                const: false
+              canMerge:
+                const: true
+          then:
+            properties:
+              conflicts:
+                maxItems: 0
+    MergeResult:
+      type: object
+      additionalProperties: false
+      required: [note, noteETag, editRequest]
+      description: Result of a successful merge. The HTTP `ETag` header belongs to `editRequest`; `noteETag` is the note's new version.
+      properties:
+        note:
+          $ref: '#/components/schemas/Note'
+        noteETag:
+          $ref: '#/components/schemas/StrongETag'
+        editRequest:
+          $ref: '#/components/schemas/EditRequest'
+
+    # ---- Pages --------------------------------------------------------------
+    UserPage:
+      type: object
+      additionalProperties: false
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/User'
+        nextCursor:
+          $ref: '#/components/schemas/NextCursor'
+    TeamPage:
+      type: object
+      additionalProperties: false
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Team'
+        nextCursor:
+          $ref: '#/components/schemas/NextCursor'
+    MembershipPage:
+      type: object
+      additionalProperties: false
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Membership'
+        nextCursor:
+          $ref: '#/components/schemas/NextCursor'
+    NoteSummaryPage:
+      type: object
+      additionalProperties: false
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/NoteSummary'
+        nextCursor:
+          $ref: '#/components/schemas/NextCursor'
+    SharePage:
+      type: object
+      additionalProperties: false
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Share'
+        nextCursor:
+          $ref: '#/components/schemas/NextCursor'
+    CommentPage:
+      type: object
+      additionalProperties: false
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Comment'
+        nextCursor:
+          $ref: '#/components/schemas/NextCursor'
+    EditRequestSummaryPage:
+      type: object
+      additionalProperties: false
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/EditRequestSummary'
+        nextCursor:
+          $ref: '#/components/schemas/NextCursor'
+    NextCursor:
+      type: [string, 'null']
+      minLength: 1
+      maxLength: 4096
+      description: Opaque token for the next page, or `null` on the last page. No total counts are provided.
+
+    # ---- Errors -------------------------------------------------------------
+    Problem:
+      type: object
+      required: [type, title, status, code]
+      description: >-
+        RFC 9457 Problem Details. `type` is `https://notes-api.example.com/problems/{code}` and `code` is the
+        stable machine-readable key. `detail` is explanatory text for humans and never a client control-flow
+        key. Errors never expose stack traces, note contents, or recipient data beyond the caller's
+        permissions. Extension members may be added in future versions.
+      properties:
+        type:
+          type: string
+          format: uri
+        title:
+          type: string
+        status:
+          type: integer
+          minimum: 400
+          maximum: 599
+        code:
+          $ref: '#/components/schemas/ErrorCode'
+        detail:
+          type: string
+        instance:
+          type: string
+          format: uri-reference
+        errors:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/FieldError'
+          description: Individual field issues for `422` and some `400` responses.
+    FieldError:
+      type: object
+      additionalProperties: false
+      required: [location, pointer, detail]
+      properties:
+        location:
+          $ref: '#/components/schemas/ErrorLocation'
+        pointer:
+          type: string
+          description: For `body`, an RFC 6901 JSON Pointer into the request body (for example `/recipient/id`); for `query`, `header`, and `path`, the parameter name.
+        detail:
+          type: string
+
+  examples:
+    # ---- Users --------------------------------------------------------------
+    UserOwner:
+      summary: The note owner in the worked example
+      value:
+        id: 11111111-1111-4111-8111-111111111111
+        displayName: Ada Okafor
+        createdAt: '2026-09-01T09:00:00Z'
+    UserProposer:
+      summary: The proposer in the worked example
+      value:
+        id: 22222222-2222-4222-8222-222222222222
+        displayName: Ben Ortiz
+        createdAt: '2026-09-01T09:05:00Z'
+    UserPage:
+      summary: Directory page (createdAt DESC, id DESC)
+      value:
+        items:
+          - id: 22222222-2222-4222-8222-222222222222
+            displayName: Ben Ortiz
+            createdAt: '2026-09-01T09:05:00Z'
+          - id: 11111111-1111-4111-8111-111111111111
+            displayName: Ada Okafor
+            createdAt: '2026-09-01T09:00:00Z'
+        nextCursor: null
+
+    # ---- Teams and memberships ----------------------------------------------
+    CreateTeamRequest:
+      value:
+        name: Platform
+    UpdateTeamRequest:
+      value:
+        name: Platform Engineering
+    TeamPlatform:
+      value:
+        id: 33333333-3333-4333-8333-333333333333
+        name: Platform
+        createdAt: '2026-09-02T10:00:00Z'
+        updatedAt: '2026-09-02T10:00:00Z'
+    TeamPage:
+      value:
+        items:
+          - id: 33333333-3333-4333-8333-333333333333
+            name: Platform
+            createdAt: '2026-09-02T10:00:00Z'
+            updatedAt: '2026-09-02T10:00:00Z'
+        nextCursor: null
+    AddMembershipRequest:
+      summary: Add a member (role defaults to member)
+      value:
+        userId: 22222222-2222-4222-8222-222222222222
+    UpdateMembershipRequest:
+      value:
+        role: admin
+    MembershipAdmin:
+      value:
+        teamId: 33333333-3333-4333-8333-333333333333
+        userId: 11111111-1111-4111-8111-111111111111
+        role: admin
+        joinedAt: '2026-09-02T10:00:00Z'
+        updatedAt: '2026-09-02T10:00:00Z'
+    MembershipMember:
+      value:
+        teamId: 33333333-3333-4333-8333-333333333333
+        userId: 22222222-2222-4222-8222-222222222222
+        role: member
+        joinedAt: '2026-09-02T10:15:00Z'
+        updatedAt: '2026-09-02T10:15:00Z'
+    MembershipPage:
+      summary: Members sorted by joinedAt DESC, userId DESC
+      value:
+        items:
+          - teamId: 33333333-3333-4333-8333-333333333333
+            userId: 22222222-2222-4222-8222-222222222222
+            role: member
+            joinedAt: '2026-09-02T10:15:00Z'
+            updatedAt: '2026-09-02T10:15:00Z'
+          - teamId: 33333333-3333-4333-8333-333333333333
+            userId: 11111111-1111-4111-8111-111111111111
+            role: admin
+            joinedAt: '2026-09-02T10:00:00Z'
+            updatedAt: '2026-09-02T10:00:00Z'
+        nextCursor: null
+
+    # ---- Notes --------------------------------------------------------------
+    CreateNoteRequest:
+      summary: Section 5 of the design guide
+      value:
+        title: Release checklist
+        body: "## Release\n\n- Run tests\n- Deploy\n"
+        tags: [release]
+    UpdateNoteRequest:
+      summary: Owner edits title and body directly (produces note-v3 in the worked example)
+      value:
+        title: Release checklist (2026)
+        body: "## Release\n\n- Run tests\n- Review metrics and error rates\n- Deploy to production\n"
+    NoteV1Owner:
+      summary: Note as created, seen by its owner (ETag "note-v1")
+      value:
+        id: 44444444-4444-4444-8444-444444444444
+        authorId: 11111111-1111-4111-8111-111111111111
+        title: Release checklist
+        body: "## Release\n\n- Run tests\n- Deploy\n"
+        tags: [release]
+        createdAt: '2026-09-10T14:00:00Z'
+        updatedAt: '2026-09-10T14:00:00Z'
+        deletedAt: null
+        expiresAt: null
+        isOwner: true
+        effectivePermissions: [read, comment, propose_edit]
+    NoteV1Proposer:
+      summary: The same note seen by a recipient holding a propose_edit share
+      value:
+        id: 44444444-4444-4444-8444-444444444444
+        authorId: 11111111-1111-4111-8111-111111111111
+        title: Release checklist
+        body: "## Release\n\n- Run tests\n- Deploy\n"
+        tags: [release]
+        createdAt: '2026-09-10T14:00:00Z'
+        updatedAt: '2026-09-10T14:00:00Z'
+        deletedAt: null
+        expiresAt: null
+        isOwner: false
+        effectivePermissions: [read, propose_edit]
+    NoteV3Owner:
+      summary: After the owner's direct PATCH (ETag "note-v3")
+      value:
+        id: 44444444-4444-4444-8444-444444444444
+        authorId: 11111111-1111-4111-8111-111111111111
+        title: Release checklist (2026)
+        body: "## Release\n\n- Run tests\n- Review metrics and error rates\n- Deploy to production\n"
+        tags: [release]
+        createdAt: '2026-09-10T14:00:00Z'
+        updatedAt: '2026-09-11T10:00:00Z'
+        deletedAt: null
+        expiresAt: null
+        isOwner: true
+        effectivePermissions: [read, comment, propose_edit]
+    NoteTrashedOwner:
+      summary: Trashed note, visible to the owner only (ETag "note-v4")
+      value:
+        id: 44444444-4444-4444-8444-444444444444
+        authorId: 11111111-1111-4111-8111-111111111111
+        title: Release checklist (2026)
+        body: "## Release\n\n- Run tests\n- Review metrics and error rates\n- Deploy to production\n"
+        tags: [release]
+        createdAt: '2026-09-10T14:00:00Z'
+        updatedAt: '2026-09-11T12:00:00Z'
+        deletedAt: '2026-09-11T12:00:00Z'
+        expiresAt: '2026-10-11T12:00:00Z'
+        isOwner: true
+        effectivePermissions: [read, comment, propose_edit]
+    NoteRestoredOwner:
+      summary: Restored note, now private (ETag "note-v5")
+      value:
+        id: 44444444-4444-4444-8444-444444444444
+        authorId: 11111111-1111-4111-8111-111111111111
+        title: Release checklist (2026)
+        body: "## Release\n\n- Run tests\n- Review metrics and error rates\n- Deploy to production\n"
+        tags: [release]
+        createdAt: '2026-09-10T14:00:00Z'
+        updatedAt: '2026-09-12T08:00:00Z'
+        deletedAt: null
+        expiresAt: null
+        isOwner: true
+        effectivePermissions: [read, comment, propose_edit]
+    NoteSummaryPage:
+      summary: Summaries omit body; sorted createdAt DESC, id DESC
+      value:
+        items:
+          - id: 44444444-4444-4444-8444-444444444444
+            authorId: 11111111-1111-4111-8111-111111111111
+            title: Release checklist
+            tags: [release]
+            createdAt: '2026-09-10T14:00:00Z'
+            updatedAt: '2026-09-10T14:00:00Z'
+            deletedAt: null
+            expiresAt: null
+            isOwner: true
+            effectivePermissions: [read, comment, propose_edit]
+          - id: 43434343-4343-4343-8343-434343434343
+            authorId: 22222222-2222-4222-8222-222222222222
+            title: Onboarding notes
+            tags: [onboarding]
+            createdAt: '2026-09-09T09:00:00Z'
+            updatedAt: '2026-09-09T09:00:00Z'
+            deletedAt: null
+            expiresAt: null
+            isOwner: false
+            effectivePermissions: [read]
+        nextCursor: eyJjcmVhdGVkQXQiOiIyMDI2LTA5LTA5VDA5OjAwOjAwWiIsImlkIjoiNDM0MzQzNDMtNDM0My00MzQzLTgzNDMtNDM0MzQzNDM0MzQzIn0
+
+    # ---- Shares -------------------------------------------------------------
+    CreateShareRequest:
+      summary: Proposal-only grant to a user (section 5)
+      value:
+        recipient:
+          type: user
+          id: 22222222-2222-4222-8222-222222222222
+        permissions: [propose_edit]
+    UpdateShareRequest:
+      summary: Replace with comment plus propose_edit (section 5)
+      value:
+        permissions: [comment, propose_edit]
+    ShareProposeEdit:
+      summary: Canonical response with implied read added
+      value:
+        id: 55555555-5555-4555-8555-555555555555
+        noteId: 44444444-4444-4444-8444-444444444444
+        recipient:
+          type: user
+          id: 22222222-2222-4222-8222-222222222222
+        permissions: [read, propose_edit]
+        createdAt: '2026-09-10T14:10:00Z'
+        updatedAt: '2026-09-10T14:10:00Z'
+    ShareCommentProposeEdit:
+      summary: The same share after PATCH
+      value:
+        id: 55555555-5555-4555-8555-555555555555
+        noteId: 44444444-4444-4444-8444-444444444444
+        recipient:
+          type: user
+          id: 22222222-2222-4222-8222-222222222222
+        permissions: [read, comment, propose_edit]
+        createdAt: '2026-09-10T14:10:00Z'
+        updatedAt: '2026-09-10T14:20:00Z'
+    ShareTeamRead:
+      summary: Read-only grant to a team
+      value:
+        id: 55555555-5555-4555-8555-555555555556
+        noteId: 44444444-4444-4444-8444-444444444444
+        recipient:
+          type: team
+          id: 33333333-3333-4333-8333-333333333333
+        permissions: [read]
+        createdAt: '2026-09-10T14:12:00Z'
+        updatedAt: '2026-09-10T14:12:00Z'
+    SharePage:
+      value:
+        items:
+          - id: 55555555-5555-4555-8555-555555555556
+            noteId: 44444444-4444-4444-8444-444444444444
+            recipient:
+              type: team
+              id: 33333333-3333-4333-8333-333333333333
+            permissions: [read]
+            createdAt: '2026-09-10T14:12:00Z'
+            updatedAt: '2026-09-10T14:12:00Z'
+          - id: 55555555-5555-4555-8555-555555555555
+            noteId: 44444444-4444-4444-8444-444444444444
+            recipient:
+              type: user
+              id: 22222222-2222-4222-8222-222222222222
+            permissions: [read, comment, propose_edit]
+            createdAt: '2026-09-10T14:10:00Z'
+            updatedAt: '2026-09-10T14:20:00Z'
+        nextCursor: null
+
+    # ---- Comments -----------------------------------------------------------
+    CreateCommentRequest:
+      value:
+        body: Please check the error rate after deployment.
+    UpdateCommentRequest:
+      value:
+        body: Please check the error rate and p95 latency after deployment.
+    CommentExample:
+      value:
+        id: 66666666-6666-4666-8666-666666666666
+        noteId: 44444444-4444-4444-8444-444444444444
+        authorId: 22222222-2222-4222-8222-222222222222
+        body: Please check the error rate after deployment.
+        createdAt: '2026-09-10T14:30:00Z'
+        updatedAt: '2026-09-10T14:30:00Z'
+    CommentPage:
+      summary: Comments sorted createdAt ASC, id ASC
+      value:
+        items:
+          - id: 66666666-6666-4666-8666-666666666666
+            noteId: 44444444-4444-4444-8444-444444444444
+            authorId: 22222222-2222-4222-8222-222222222222
+            body: Please check the error rate after deployment.
+            createdAt: '2026-09-10T14:30:00Z'
+            updatedAt: '2026-09-10T14:30:00Z'
+        nextCursor: null
+
+    # ---- Edit requests ------------------------------------------------------
+    CreateEditRequestRequest:
+      summary: Section 5 of the design guide
+      value:
+        baseNoteETag: '"note-v1"'
+        proposedContent:
+          title: Release checklist
+          body: "## Release\n\n- Run tests\n- Review metrics\n- Deploy\n"
+        explanation: Add a metrics check before deployment.
+    ReviseEditRequestRequest:
+      summary: Proposer revises the proposal (base is unchanged)
+      value:
+        proposedContent:
+          title: Release runbook
+          body: "## Release\n\n- Run tests\n- Review metrics and error rates\n- Deploy (staged)\n"
+        explanation: Rename to runbook and stage the deploy.
+    PreviewEditRequestRequest:
+      summary: Owner previews their own refinement of the proposal
+      value:
+        finalContent:
+          title: Release checklist
+          body: "## Release\n\n- Run tests\n- Review metrics and error rates\n- Deploy\n"
+    MergeEditRequestPlain:
+      summary: Merge the clean automatic candidate
+      value:
+        expectedNoteETag: '"note-v1"'
+    MergeEditRequestWithFinalContent:
+      summary: Merge owner-edited content
+      value:
+        expectedNoteETag: '"note-v1"'
+        finalContent:
+          title: Release checklist
+          body: "## Release\n\n- Run tests\n- Review metrics and error rates\n- Deploy\n"
+    RejectEditRequestRequest:
+      value:
+        reason: Staged deploys are covered by the deployment runbook.
+    EditRequestOpen:
+      summary: Newly submitted request (ETag "request-v1"); the note is unchanged
+      value:
+        id: 77777777-7777-4777-8777-777777777777
+        noteId: 44444444-4444-4444-8444-444444444444
+        noteTitle: Release checklist
+        proposerId: 22222222-2222-4222-8222-222222222222
+        status: open
+        createdAt: '2026-09-10T15:00:00Z'
+        updatedAt: '2026-09-10T15:00:00Z'
+        closedAt: null
+        baseContent:
+          title: Release checklist
+          body: "## Release\n\n- Run tests\n- Deploy\n"
+        proposedContent:
+          title: Release checklist
+          body: "## Release\n\n- Run tests\n- Review metrics\n- Deploy\n"
+        explanation: Add a metrics check before deployment.
+        proposalDiff:
+          title: ''
+          body: "--- base/body\n+++ proposed/body\n@@ -1,4 +1,5 @@\n ## Release\n \n - Run tests\n+- Review metrics\n - Deploy\n"
+        rejectionReason: null
+        mergeRecord: null
+    EditRequestMerged:
+      summary: The same request after a merge with owner edits (ETag "request-v2")
+      value:
+        id: 77777777-7777-4777-8777-777777777777
+        noteId: 44444444-4444-4444-8444-444444444444
+        noteTitle: Release checklist
+        proposerId: 22222222-2222-4222-8222-222222222222
+        status: merged
+        createdAt: '2026-09-10T15:00:00Z'
+        updatedAt: '2026-09-10T16:00:00Z'
+        closedAt: '2026-09-10T16:00:00Z'
+        baseContent:
+          title: Release checklist
+          body: "## Release\n\n- Run tests\n- Deploy\n"
+        proposedContent:
+          title: Release checklist
+          body: "## Release\n\n- Run tests\n- Review metrics\n- Deploy\n"
+        explanation: Add a metrics check before deployment.
+        proposalDiff:
+          title: ''
+          body: "--- base/body\n+++ proposed/body\n@@ -1,4 +1,5 @@\n ## Release\n \n - Run tests\n+- Review metrics\n - Deploy\n"
+        rejectionReason: null
+        mergeRecord:
+          content:
+            title: Release checklist
+            body: "## Release\n\n- Run tests\n- Review metrics and error rates\n- Deploy\n"
+          noteETag: '"note-v2"'
+          mergedBy: 11111111-1111-4111-8111-111111111111
+          mergedAt: '2026-09-10T16:00:00Z'
+    EditRequestConflicting:
+      summary: A second request, submitted against note-v2, whose title and last line now conflict with note-v3
+      value:
+        id: 88888888-8888-4888-8888-888888888888
+        noteId: 44444444-4444-4444-8444-444444444444
+        noteTitle: Release checklist (2026)
+        proposerId: 22222222-2222-4222-8222-222222222222
+        status: open
+        createdAt: '2026-09-11T09:00:00Z'
+        updatedAt: '2026-09-11T09:30:00Z'
+        closedAt: null
+        baseContent:
+          title: Release checklist
+          body: "## Release\n\n- Run tests\n- Review metrics and error rates\n- Deploy\n"
+        proposedContent:
+          title: Release runbook
+          body: "## Release\n\n- Run tests\n- Review metrics and error rates\n- Deploy (staged)\n"
+        explanation: Rename to runbook and stage the deploy.
+        proposalDiff:
+          title: "--- base/title\n+++ proposed/title\n@@ -1 +1 @@\n-Release checklist\n+Release runbook\n"
+          body: "--- base/body\n+++ proposed/body\n@@ -2,4 +2,4 @@\n \n - Run tests\n - Review metrics and error rates\n-- Deploy\n+- Deploy (staged)\n"
+        rejectionReason: null
+        mergeRecord: null
+    EditRequestRejected:
+      summary: The conflicting request after rejection (ETag "request-b2")
+      value:
+        id: 88888888-8888-4888-8888-888888888888
+        noteId: 44444444-4444-4444-8444-444444444444
+        noteTitle: Release checklist (2026)
+        proposerId: 22222222-2222-4222-8222-222222222222
+        status: rejected
+        createdAt: '2026-09-11T09:00:00Z'
+        updatedAt: '2026-09-11T11:00:00Z'
+        closedAt: '2026-09-11T11:00:00Z'
+        baseContent:
+          title: Release checklist
+          body: "## Release\n\n- Run tests\n- Review metrics and error rates\n- Deploy\n"
+        proposedContent:
+          title: Release runbook
+          body: "## Release\n\n- Run tests\n- Review metrics and error rates\n- Deploy (staged)\n"
+        explanation: Rename to runbook and stage the deploy.
+        proposalDiff:
+          title: "--- base/title\n+++ proposed/title\n@@ -1 +1 @@\n-Release checklist\n+Release runbook\n"
+          body: "--- base/body\n+++ proposed/body\n@@ -2,4 +2,4 @@\n \n - Run tests\n - Review metrics and error rates\n-- Deploy\n+- Deploy (staged)\n"
+        rejectionReason: Staged deploys are covered by the deployment runbook.
+        mergeRecord: null
+    EditRequestWithdrawn:
+      summary: A request withdrawn by its proposer
+      value:
+        id: aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa
+        noteId: 44444444-4444-4444-8444-444444444444
+        noteTitle: Release checklist (2026)
+        proposerId: 22222222-2222-4222-8222-222222222222
+        status: withdrawn
+        createdAt: '2026-09-11T10:30:00Z'
+        updatedAt: '2026-09-11T10:45:00Z'
+        closedAt: '2026-09-11T10:45:00Z'
+        baseContent:
+          title: Release checklist (2026)
+          body: "## Release\n\n- Run tests\n- Review metrics and error rates\n- Deploy to production\n"
+        proposedContent:
+          title: Release checklist (2026)
+          body: "## Release\n\n- Run tests\n- Review metrics and error rates\n- Deploy to production\n- Announce in #releases\n"
+        explanation: null
+        proposalDiff:
+          title: ''
+          body: "--- base/body\n+++ proposed/body\n@@ -3,3 +3,4 @@\n - Run tests\n - Review metrics and error rates\n - Deploy to production\n+- Announce in #releases\n"
+        rejectionReason: null
+        mergeRecord: null
+    EditRequestSummaryPage:
+      summary: Owner's incoming inbox of open requests on active notes
+      value:
+        items:
+          - id: 88888888-8888-4888-8888-888888888888
+            noteId: 44444444-4444-4444-8444-444444444444
+            noteTitle: Release checklist (2026)
+            proposerId: 22222222-2222-4222-8222-222222222222
+            status: open
+            createdAt: '2026-09-11T09:00:00Z'
+            updatedAt: '2026-09-11T09:30:00Z'
+            closedAt: null
+        nextCursor: null
+
+    # ---- Previews and merges ------------------------------------------------
+    PreviewClean:
+      summary: Neither version changed since submission; the proposal merges cleanly
+      value:
+        requestETag: '"request-v1"'
+        currentNoteETag: '"note-v1"'
+        canMerge: true
+        usedFinalContent: false
+        candidate:
+          title: Release checklist
+          body: "## Release\n\n- Run tests\n- Review metrics\n- Deploy\n"
+        conflicts: []
+        proposalDiff:
+          title: ''
+          body: "--- base/body\n+++ proposed/body\n@@ -1,4 +1,5 @@\n ## Release\n \n - Run tests\n+- Review metrics\n - Deploy\n"
+        mergeDiff:
+          title: ''
+          body: "--- current/body\n+++ candidate/body\n@@ -1,4 +1,5 @@\n ## Release\n \n - Run tests\n+- Review metrics\n - Deploy\n"
+    PreviewWithFinalContent:
+      summary: Owner supplied finalContent refining the clean proposal
+      value:
+        requestETag: '"request-v1"'
+        currentNoteETag: '"note-v1"'
+        canMerge: true
+        usedFinalContent: true
+        candidate:
+          title: Release checklist
+          body: "## Release\n\n- Run tests\n- Review metrics and error rates\n- Deploy\n"
+        conflicts: []
+        proposalDiff:
+          title: ''
+          body: "--- base/body\n+++ proposed/body\n@@ -1,4 +1,5 @@\n ## Release\n \n - Run tests\n+- Review metrics\n - Deploy\n"
+        mergeDiff:
+          title: ''
+          body: "--- current/body\n+++ candidate/body\n@@ -1,4 +1,5 @@\n ## Release\n \n - Run tests\n+- Review metrics and error rates\n - Deploy\n"
+    PreviewConflict:
+      summary: Title and body conflicts; still a 200 with canMerge false
+      value:
+        requestETag: '"request-b1"'
+        currentNoteETag: '"note-v3"'
+        canMerge: false
+        usedFinalContent: false
+        candidate: null
+        conflicts:
+          - field: title
+            baseRange: null
+            base: Release checklist
+            current: Release checklist (2026)
+            proposed: Release runbook
+          - field: body
+            baseRange:
+              start: 5
+              end: 6
+            base: "- Deploy\n"
+            current: "- Deploy to production\n"
+            proposed: "- Deploy (staged)\n"
+        proposalDiff:
+          title: "--- base/title\n+++ proposed/title\n@@ -1 +1 @@\n-Release checklist\n+Release runbook\n"
+          body: "--- base/body\n+++ proposed/body\n@@ -2,4 +2,4 @@\n \n - Run tests\n - Review metrics and error rates\n-- Deploy\n+- Deploy (staged)\n"
+        mergeDiff: null
+    PreviewConflictResolved:
+      summary: The same conflicts resolved by complete finalContent; conflicts are retained for review
+      value:
+        requestETag: '"request-b1"'
+        currentNoteETag: '"note-v3"'
+        canMerge: true
+        usedFinalContent: true
+        candidate:
+          title: Release runbook (2026)
+          body: "## Release\n\n- Run tests\n- Review metrics and error rates\n- Deploy to production (staged)\n"
+        conflicts:
+          - field: title
+            baseRange: null
+            base: Release checklist
+            current: Release checklist (2026)
+            proposed: Release runbook
+          - field: body
+            baseRange:
+              start: 5
+              end: 6
+            base: "- Deploy\n"
+            current: "- Deploy to production\n"
+            proposed: "- Deploy (staged)\n"
+        proposalDiff:
+          title: "--- base/title\n+++ proposed/title\n@@ -1 +1 @@\n-Release checklist\n+Release runbook\n"
+          body: "--- base/body\n+++ proposed/body\n@@ -2,4 +2,4 @@\n \n - Run tests\n - Review metrics and error rates\n-- Deploy\n+- Deploy (staged)\n"
+        mergeDiff:
+          title: "--- current/title\n+++ candidate/title\n@@ -1 +1 @@\n-Release checklist (2026)\n+Release runbook (2026)\n"
+          body: "--- current/body\n+++ candidate/body\n@@ -2,4 +2,4 @@\n \n - Run tests\n - Review metrics and error rates\n-- Deploy to production\n+- Deploy to production (staged)\n"
+    MergeResultExample:
+      summary: Merge of request 7777 with owner edits; the HTTP ETag is the request's
+      value:
+        note:
+          id: 44444444-4444-4444-8444-444444444444
+          authorId: 11111111-1111-4111-8111-111111111111
+          title: Release checklist
+          body: "## Release\n\n- Run tests\n- Review metrics and error rates\n- Deploy\n"
+          tags: [release]
+          createdAt: '2026-09-10T14:00:00Z'
+          updatedAt: '2026-09-10T16:00:00Z'
+          deletedAt: null
+          expiresAt: null
+          isOwner: true
+          effectivePermissions: [read, comment, propose_edit]
+        noteETag: '"note-v2"'
+        editRequest:
+          id: 77777777-7777-4777-8777-777777777777
+          noteId: 44444444-4444-4444-8444-444444444444
+          noteTitle: Release checklist
+          proposerId: 22222222-2222-4222-8222-222222222222
+          status: merged
+          createdAt: '2026-09-10T15:00:00Z'
+          updatedAt: '2026-09-10T16:00:00Z'
+          closedAt: '2026-09-10T16:00:00Z'
+          baseContent:
+            title: Release checklist
+            body: "## Release\n\n- Run tests\n- Deploy\n"
+          proposedContent:
+            title: Release checklist
+            body: "## Release\n\n- Run tests\n- Review metrics\n- Deploy\n"
+          explanation: Add a metrics check before deployment.
+          proposalDiff:
+            title: ''
+            body: "--- base/body\n+++ proposed/body\n@@ -1,4 +1,5 @@\n ## Release\n \n - Run tests\n+- Review metrics\n - Deploy\n"
+          rejectionReason: null
+          mergeRecord:
+            content:
+              title: Release checklist
+              body: "## Release\n\n- Run tests\n- Review metrics and error rates\n- Deploy\n"
+            noteETag: '"note-v2"'
+            mergedBy: 11111111-1111-4111-8111-111111111111
+            mergedAt: '2026-09-10T16:00:00Z'
+
+    # ---- Problems (one per ErrorCode, plus operation-specific variants) -----
+    ProblemUnauthenticated:
+      value:
+        type: https://notes-api.example.com/problems/unauthenticated
+        title: Unauthenticated
+        status: 401
+        code: unauthenticated
+        detail: The request did not carry a valid bearer access token.
+    ProblemForbidden:
+      value:
+        type: https://notes-api.example.com/problems/forbidden
+        title: Forbidden
+        status: 403
+        code: forbidden
+        detail: You can see this resource but are not allowed to perform this operation on it.
+    ProblemNotFound:
+      value:
+        type: https://notes-api.example.com/problems/not_found
+        title: Not found
+        status: 404
+        code: not_found
+        detail: The requested resource does not exist or is not visible to you.
+    ProblemMalformedRequest:
+      value:
+        type: https://notes-api.example.com/problems/malformed_request
+        title: Malformed request
+        status: 400
+        code: malformed_request
+        detail: The request body is not well-formed JSON.
+    ProblemMalformedIfMatch:
+      value:
+        type: https://notes-api.example.com/problems/malformed_request
+        title: Malformed request
+        status: 400
+        code: malformed_request
+        detail: If-Match must contain exactly one strong entity tag.
+        errors:
+          - location: header
+            pointer: If-Match
+            detail: weak validators, wildcards, and lists are not accepted
+    ProblemInvalidCursor:
+      value:
+        type: https://notes-api.example.com/problems/invalid_cursor
+        title: Invalid cursor
+        status: 400
+        code: invalid_cursor
+        detail: The cursor is invalid, expired, or was issued for different query settings.
+    ProblemUnsupportedMediaType:
+      value:
+        type: https://notes-api.example.com/problems/unsupported_media_type
+        title: Unsupported media type
+        status: 415
+        code: unsupported_media_type
+        detail: Request bodies must use application/json.
+    ProblemValidationFailed:
+      summary: Body schema violations, including an unknown field
+      value:
+        type: https://notes-api.example.com/problems/validation_failed
+        title: Validation failed
+        status: 422
+        code: validation_failed
+        detail: The request body does not satisfy the schema.
+        errors:
+          - location: body
+            pointer: /title
+            detail: must contain a non-whitespace character
+          - location: body
+            pointer: /authorId
+            detail: unknown field
+    ProblemQueryValidationFailed:
+      summary: Query parameter violation
+      value:
+        type: https://notes-api.example.com/problems/validation_failed
+        title: Validation failed
+        status: 422
+        code: validation_failed
+        detail: A query parameter is invalid.
+        errors:
+          - location: query
+            pointer: limit
+            detail: must be between 1 and 100
+    ProblemShareToOwner:
+      value:
+        type: https://notes-api.example.com/problems/validation_failed
+        title: Validation failed
+        status: 422
+        code: validation_failed
+        detail: The note owner already has every permission; sharing with them is redundant.
+        errors:
+          - location: body
+            pointer: /recipient/id
+            detail: recipient is the note owner
+    ProblemEmptyProposal:
+      value:
+        type: https://notes-api.example.com/problems/validation_failed
+        title: Validation failed
+        status: 422
+        code: validation_failed
+        detail: The proposed content is identical to the base snapshot.
+        errors:
+          - location: body
+            pointer: /proposedContent
+            detail: proposal must differ from the base
+    ProblemPreconditionRequired:
+      value:
+        type: https://notes-api.example.com/problems/precondition_required
+        title: Precondition required
+        status: 428
+        code: precondition_required
+        detail: This operation requires an If-Match header carrying the resource's current ETag.
+    ProblemPreconditionFailed:
+      value:
+        type: https://notes-api.example.com/problems/precondition_failed
+        title: Precondition failed
+        status: 412
+        code: precondition_failed
+        detail: The resource version you supplied no longer matches. Fetch it again and reconcile.
+    ProblemNoteNotActive:
+      value:
+        type: https://notes-api.example.com/problems/note_not_active
+        title: Note is in the trash
+        status: 409
+        code: note_not_active
+        detail: The note is in the trash. Restore it before making changes.
+    ProblemNoteAlreadyActive:
+      value:
+        type: https://notes-api.example.com/problems/note_already_active
+        title: Note is already active
+        status: 409
+        code: note_already_active
+        detail: The note is not in the trash, so there is nothing to restore.
+    ProblemRequestNotOpen:
+      value:
+        type: https://notes-api.example.com/problems/request_not_open
+        title: Edit request is closed
+        status: 409
+        code: request_not_open
+        detail: The edit request has already been merged, rejected, or withdrawn. Closed records are immutable.
+    ProblemDuplicateMembership:
+      value:
+        type: https://notes-api.example.com/problems/duplicate_membership
+        title: Already a member
+        status: 409
+        code: duplicate_membership
+        detail: This user is already a member of the team.
+    ProblemDuplicateShare:
+      value:
+        type: https://notes-api.example.com/problems/duplicate_share
+        title: Duplicate share
+        status: 409
+        code: duplicate_share
+        detail: A share for this recipient already exists. Update or revoke the existing share instead.
+    ProblemLastAdmin:
+      value:
+        type: https://notes-api.example.com/problems/last_admin
+        title: Last admin
+        status: 409
+        code: last_admin
+        detail: Every team needs at least one admin. Promote another member first.
+    ProblemMergeConflict:
+      value:
+        type: https://notes-api.example.com/problems/merge_conflict
+        title: Merge conflict
+        status: 409
+        code: merge_conflict
+        detail: The proposal conflicts with the current note. Preview the request, resolve the conflicts, and merge with complete finalContent.
