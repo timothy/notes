@@ -6,6 +6,7 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.hypothesis/
 
 # Node artifacts if the Redocly lint is installed locally instead of via npx
 node_modules/
