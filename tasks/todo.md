@@ -7,7 +7,7 @@ Checklist for `tasks/plan.md` (approved 2026-09-13). Each task's full descriptio
 - [x] T0.1 Project scaffold and CI (S) — deps: none. AC: `uv sync --frozen` from clean checkout; empty suite green; `server.yml` passes without touching the contract workflows.
 - [x] T0.2 Contract loader, generated models, drift check (M) — deps: T0.1. AC: every `negative_cases.yaml` verdict reproduced by `validate_body`; `ProblemValidationFailed` errors reproduced; drift check fails on an edited generated file.
 - [x] T0.3 Problems, middleware, body parser, If-Match parser (M) — deps: T0.2. AC: 400/415/422/428 mapping and `If-Match` shapes; `Cache-Control: no-store` on every response; 401 challenge variants.
-- [ ] T0.4a ORM models and initial migration (M) — deps: T0.1. AC: migration applies on SQLite and PostgreSQL; metadata and migration agree; cascades work with `foreign_keys=ON`.
+- [x] T0.4a ORM models and initial migration (M) — deps: T0.1. AC: migration applies on SQLite and PostgreSQL; metadata and migration agree; cascades work with `foreign_keys=ON`.
 - [ ] T0.4b Engine, session, unit of work, clock (M) — deps: T0.4a. AC: two-thread read-then-write serializes; `hooks.before_begin` runs before `BEGIN`; `UTCDateTime` round-trips microseconds.
 - [ ] T0.5 Test harness and ContractClient (M) — deps: T0.3, T0.4b. AC: wrong body fails through the client; undeclared status fails; personas get distinct ids.
 - [ ] Checkpoint A
