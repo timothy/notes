@@ -8,6 +8,7 @@ contract's ``FieldError`` shape: a location, an RFC 6901 pointer, and a human ex
 
 from __future__ import annotations
 
+import functools
 import re
 from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
@@ -71,6 +72,13 @@ class Contract:
             self._validators[schema_name] = validator
         return validator
 
+    def validate_instance(self, schema: Mapping[str, Any], instance: object) -> list[str]:
+        """Messages for any schema fragment of the document; relative ``#/`` references are allowed."""
+        validator = Draft202012Validator(
+            _absolutize(schema), registry=self._registry, format_checker=Draft202012Validator.FORMAT_CHECKER
+        )
+        return [error.message for error in validator.iter_errors(instance)]
+
     def validate_body(self, schema_name: str, instance: object) -> list[FieldError]:
         """Field errors for a request body, one per pointer, sorted by pointer; empty when valid."""
         errors: dict[str, FieldError] = {}
@@ -127,6 +135,28 @@ class Contract:
             if keyword in schema:
                 names |= self._declared_properties(schema[keyword], seen)
         return names
+
+
+@functools.lru_cache(maxsize=4)
+def load_contract(path: Path = DEFAULT_CONTRACT_PATH) -> Contract:
+    """The contract at ``path``, parsed once per process."""
+    return Contract.load(path)
+
+
+def _absolutize(schema: Any) -> Any:
+    """Rewrite document-relative ``#/`` references so a fragment validates outside its document."""
+    if isinstance(schema, Mapping):
+        return {
+            key: (
+                SPEC_URI + value
+                if key == "$ref" and isinstance(value, str) and value.startswith("#")
+                else _absolutize(value)
+            )
+            for key, value in schema.items()
+        }
+    if isinstance(schema, list):
+        return [_absolutize(item) for item in schema]
+    return schema
 
 
 def json_pointer(path: Iterable[str | int]) -> str:
