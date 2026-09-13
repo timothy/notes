@@ -1,0 +1,67 @@
+[project]
+name = "notes-api"
+version = "0.1.0"
+description = "Reference server for the Notes API contract (openapi.yaml 2.0.0)."
+readme = "README.md"
+authors = [
+    { name = "Timothy Bradford", email = "tim.bradford@life.church" }
+]
+license = "Apache-2.0"
+requires-python = ">=3.12"
+dependencies = [
+    "alembic>=1.20",
+    "fastapi>=0.141",
+    "jsonschema>=4.23",
+    "psycopg[binary]>=3.3",
+    "pydantic>=2.13",
+    "pydantic-settings>=2.15",
+    "pyjwt[crypto]>=2.14",
+    "pyyaml>=6.0.1",
+    "referencing>=0.35",
+    "rfc3339-validator>=0.1.4",
+    "rfc3986-validator>=0.1.1",
+    "sqlalchemy>=2.0.52",
+    "uvicorn>=0.52",
+]
+
+[build-system]
+requires = ["uv_build>=0.11.7,<0.12.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "datamodel-code-generator>=0.80",
+    "httpx>=0.28",
+    "hypothesis>=6.168",
+    "mypy>=2.3",
+    "pytest>=9.1",
+    "ruff>=0.16",
+    "schemathesis>=4.27",
+    "types-jsonschema>=4.26.0.20260518",
+    "types-pyyaml>=6.0.12.20260906",
+]
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["notes_api"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unreachable = true
+files = ["src", "tests"]
+plugins = ["pydantic.mypy"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+markers = [
+    "acceptance(row): the design guide section 6 acceptance row this test covers",
+]
