@@ -24,6 +24,9 @@ info:
 
     The normative design guide is `docs/design-guide.md`. Operation descriptions and schemas in this
     document are normative too. This is a contract only; there is no reference server.
+  license:
+    name: Apache License 2.0
+    identifier: Apache-2.0
 servers:
   - url: https://notes-api.example.com/v1
     description: Placeholder host. Every route and every `Location` value is prefixed with `/v1`.
