@@ -13,8 +13,8 @@ Checklist for `tasks/plan.md` (approved 2026-09-13). Each task's full descriptio
 - [x] Checkpoint A
 - [x] T1.1 Line splitting and unified diff (M) — deps: T0.1. AC: byte-exact spec diffs; missing-final-newline and CRLF fixtures match git; split/join round-trip property.
 - [x] T1.2 Three-way merge with conflicts (M) — deps: T1.1. AC: `PreviewConflict` conflicts reproduced; separate regions combine and identical edits appear once; competing insertions, overlaps, and incompatible titles conflict.
-- [ ] T1.3 Text-merge acceptance suite (S) — deps: T1.2. AC: every "Text merge" item named; deterministic; 5,000 lines under one second.
-- [ ] Checkpoint B
+- [x] T1.3 Text-merge acceptance suite (S) — deps: T1.2. AC: every "Text merge" item named; deterministic; 5,000 lines under one second.
+- [x] Checkpoint B
 
 ## PR 2: slices 2 and 3
 
