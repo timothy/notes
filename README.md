@@ -51,7 +51,10 @@ These are the price of the guarantee above.
 | `tests/negative_cases.yaml` | Payloads that must fail or must pass schema validation. |
 | `requirements-dev.txt` | Dependencies for the checker. |
 | `redocly.yaml` | Configuration for the optional Redocly lint. |
-| `.github/workflows/contract.yml` | GitHub Actions workflow that runs the checker and the Redocly lint on every push to `main` and every pull request. |
+| `CHANGELOG.md` | Release notes for each contract version. |
+| `LICENSE` | Apache License 2.0. |
+| `.github/workflows/contract.yml` | GitHub Actions workflow that runs the checker and the Redocly lint on every push to `main` and every pull request, and fails pull requests on client-breaking changes found by oasdiff. |
+| `.github/workflows/docs.yml` | GitHub Actions workflow that builds the API reference with Redocly on every pull request and publishes it to GitHub Pages from `main`. |
 
 ## Running the checks
 
@@ -67,6 +70,30 @@ Optional second opinion:
 npx @redocly/cli lint openapi.yaml
 ```
 
-GitHub Actions runs both commands on every push to `main` and every pull request (`.github/workflows/contract.yml`).
+GitHub Actions runs both commands on every push to `main` and every pull request, and on pull requests also compares `openapi.yaml` with `main` using oasdiff (`.github/workflows/contract.yml`; see [Releases and versioning](#releases-and-versioning)).
 
 The checks are static. Authorization, atomicity, and the merge algorithm are verified by the acceptance scenarios in section 6 of the design guide once a server exists.
+
+## Running a mock
+
+[Prism](https://github.com/stoplightio/prism) serves the contract's examples as a mock server, so client work can start before a backend exists:
+
+```sh
+npx --yes @stoplight/prism-cli@5.16.0 mock openapi.yaml --errors
+```
+
+- The mock listens on `http://127.0.0.1:4010` and serves routes without the `/v1` prefix, because Prism ignores server base paths. Point a client's base URL at `http://127.0.0.1:4010` where production would use `https://notes-api.example.com/v1`.
+- Any `Authorization: Bearer` value is accepted; a request without one gets the contract's `401` example.
+- Each response is the operation's first example. `Prefer: example=merged` selects a named example and `Prefer: code=412` selects another documented status.
+- With `--errors`, an invalid body, a missing `If-Match`, or an unsupported content type is answered with the operation's `422` or `415` example instead of a logged warning. Prism reports every request-validation failure as `422`, even where the contract says `428`.
+- The mock has no state. Creating a note returns the fixed example, and generated header values such as `Location` are placeholders.
+
+## Releases and versioning
+
+Each release is an annotated tag `v<info.version>` on `main` with an entry in [CHANGELOG.md](CHANGELOG.md), so `https://raw.githubusercontent.com/timothy/notes/v2.0.0/openapi.yaml` is the frozen 2.0.0 document. The rendered API reference for `main` is published at https://hweean.com/notes/ by `.github/workflows/docs.yml`.
+
+The `/v1` path prefix is the compatibility line for clients and `info.version` is the document's semantic version; section 4 of the design guide ("Contract versioning") defines both. Pull requests fail when oasdiff finds a client-breaking change against `main`. A deliberate break ships under a new prefix with a major version bump and carries the `breaking-change` label, which turns the failure into a report.
+
+## License
+
+Apache License 2.0. See [LICENSE](LICENSE).

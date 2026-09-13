@@ -1,5 +1,4 @@
 openapi: 3.1.2
-jsonSchemaDialect: https://spec.openapis.org/oas/3.1/dialect/base
 info:
   title: Notes API
   version: 2.0.0
@@ -24,6 +23,9 @@ info:
 
     The normative design guide is `docs/design-guide.md`. Operation descriptions and schemas in this
     document are normative too. This is a contract only; there is no reference server.
+  license:
+    name: Apache License 2.0
+    identifier: Apache-2.0
 servers:
   - url: https://notes-api.example.com/v1
     description: Placeholder host. Every route and every `Location` value is prefixed with `/v1`.
@@ -4145,7 +4147,7 @@ components:
         explanation: Add the rollback trigger.
         proposalDiff:
           title: ''
-          body: "--- base/body\n+++ proposed/body\n@@ -1,4 +1,5 @@\n ## Incident\n \n - Page the on-call\n - Open a channel\n+- Roll back if the error rate doubles\n"
+          body: "--- base/body\n+++ proposed/body\n@@ -2,3 +2,4 @@\n \n - Page the on-call\n - Open a channel\n+- Roll back if the error rate doubles\n"
         rejectionReason: null
         rejectedBy: null
         mergeRecord: null
@@ -4171,7 +4173,7 @@ components:
         explanation: Add the rollback trigger.
         proposalDiff:
           title: ''
-          body: "--- base/body\n+++ proposed/body\n@@ -1,4 +1,5 @@\n ## Incident\n \n - Page the on-call\n - Open a channel\n+- Roll back if the error rate doubles\n"
+          body: "--- base/body\n+++ proposed/body\n@@ -2,3 +2,4 @@\n \n - Page the on-call\n - Open a channel\n+- Roll back if the error rate doubles\n"
         rejectionReason: null
         rejectedBy: null
         mergeRecord: null
@@ -4366,7 +4368,7 @@ components:
           explanation: Add the rollback trigger.
           proposalDiff:
             title: ''
-            body: "--- base/body\n+++ proposed/body\n@@ -1,4 +1,5 @@\n ## Incident\n \n - Page the on-call\n - Open a channel\n+- Roll back if the error rate doubles\n"
+            body: "--- base/body\n+++ proposed/body\n@@ -2,3 +2,4 @@\n \n - Page the on-call\n - Open a channel\n+- Roll back if the error rate doubles\n"
           rejectionReason: null
           rejectedBy: null
           mergeRecord:

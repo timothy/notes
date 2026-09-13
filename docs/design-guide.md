@@ -210,6 +210,12 @@ Evaluate authentication and visibility first, then the supplied preconditions be
 
 Success bodies use `application/json`; errors use `application/problem+json` with stable `type` and `code`. `type` is `https://notes-api.example.com/problems/{code}`. The complete `code` vocabulary is the `ErrorCode` enum in the OpenAPI document: the general codes `unauthenticated`, `forbidden`, `not_found`, `malformed_request`, `invalid_cursor`, `unsupported_media_type`, `validation_failed`, `precondition_required`, and `precondition_failed`, plus the `409` codes above. Return field issues using `errors` with location/pointer/detail; for body issues `pointer` is a JSON Pointer, and for query, header, and path issues it is the parameter name. Human-readable detail is explanatory text, never a client control-flow key. Error responses must not expose internal traces, note contents, or recipient data beyond the caller's permissions.
 
+### Contract versioning
+
+The `/v1` prefix on every route and `Location` value is the compatibility line for clients. It changes only for a change that would break a correctly written client: removing or renaming an operation or a response property, adding a required request property, narrowing an accepted input, or changing the status code or meaning of an existing success response. Such a change ships under a new prefix, and the previous prefix keeps working for an announced deprecation period. Adding operations, optional request properties, response properties, or `ErrorCode` values is compatible, so clients must ignore properties they do not know and must handle an unknown `code` by its HTTP status.
+
+`info.version` is the semantic version of this contract document. The major number advances when implementers must revisit existing behavior, as 2.0.0 did by letting any note become protected and making `PATCH /notes/{noteId}` refuse title and body on one, even though every 1.0.0 client request still works under `/v1`. The minor number advances for compatible additions, and the patch number for clarifications and example fixes that leave the wire format alone; repository tooling changes do not move the version. A change that moves the compatibility line always advances the major number as well. Each release is an annotated tag `v<info.version>` on `main` and has an entry in `CHANGELOG.md`, and pull requests fail when oasdiff finds a client-breaking change against `main` (section 6).
+
 ## 5. Example client workflow
 
 These are complete request bodies validated against the named schemas. Routes below are relative to `https://notes-api.example.com/v1`; all require `Authorization: Bearer <access-token>`. IDs and ETags are illustrative, not live data. The complete response examples, including diffs and closed requests, are in `openapi.yaml`.
@@ -369,6 +375,8 @@ python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements-dev.txt
 .venv/bin/python scripts/validate_contract.py
 ```
+
+GitHub Actions runs this checker and the Redocly lint on every push to `main` and every pull request. Pull requests additionally compare `openapi.yaml` with `main` using [oasdiff](https://github.com/oasdiff/oasdiff) and fail on client-breaking changes as defined under [Contract versioning](#contract-versioning) in section 4. The `breaking-change` pull request label turns that failure into a report and is reserved for changes that move the compatibility line to a new path prefix. The workflow is `.github/workflows/contract.yml`.
 
 The checker validates the OpenAPI document, local references, every component schema, unique operation IDs, example payloads in both files (every media-type example in `openapi.yaml` and every `<!-- schema: X -->` JSON block in this guide), authentication coverage, conditional mutation coverage, endpoint inventory, required response headers and media types, the must-fail / must-pass schema fixtures in `tests/negative_cases.yaml`, the `ErrorCode` vocabulary against the Problem examples, and the ownership and approval invariants in the examples that JSON Schema cannot express. It does **not** execute a backend or prove authorization, transactions, or the merge algorithm. Those require the following acceptance scenarios when a service is implemented.
 

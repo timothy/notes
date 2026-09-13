@@ -1,6 +1,10 @@
 # Runs the contract checks on every push to main and every pull request.
 # scripts/validate_contract.py is the canonical check set (design guide, section 6);
 # the Redocly lint is the optional second opinion configured in redocly.yaml.
+# Pull requests additionally fail when oasdiff finds a client-breaking change in openapi.yaml
+# against the base branch (design guide, section 4, "Contract versioning"). Labeling the pull
+# request `breaking-change` reports those changes without failing; the label is reserved for
+# changes that deliberately move the compatibility line to a new path prefix.
 name: Contract checks
 
 on:
@@ -41,3 +45,34 @@ jobs:
         with:
           node-version: 24
       - run: npx --yes @redocly/cli@2.52.1 lint openapi.yaml
+
+  breaking:
+    name: Breaking changes vs base
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Fetch the base branch contract
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          git fetch --no-tags --depth=1 origin "$BASE_REF"
+          git show FETCH_HEAD:openapi.yaml > "$RUNNER_TEMP/base-openapi.yaml"
+      - name: Install oasdiff
+        working-directory: ${{ runner.temp }}
+        run: |
+          curl -sSL -o oasdiff.tar.gz https://github.com/oasdiff/oasdiff/releases/download/v1.31.0/oasdiff_1.31.0_linux_amd64.tar.gz
+          echo "0177d4bc0bf04f4061e9277795b77335ee100a43b508e94fce5c46de083bbede  oasdiff.tar.gz" | sha256sum -c -
+          tar -xzf oasdiff.tar.gz oasdiff
+      - name: Compare with the base branch
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          OVERRIDE: ${{ contains(github.event.pull_request.labels.*.name, 'breaking-change') }}
+        run: |
+          args=(breaking "$RUNNER_TEMP/base-openapi.yaml" openapi.yaml --format githubactions)
+          if [ "$OVERRIDE" = "true" ]; then
+            echo "::notice::Labeled breaking-change: client-breaking changes are reported but do not fail this job."
+            "$RUNNER_TEMP/oasdiff" "${args[@]}"
+          else
+            "$RUNNER_TEMP/oasdiff" "${args[@]}" --fail-on ERR && echo "No client-breaking changes against $BASE_REF."
+          fi
