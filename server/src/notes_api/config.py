@@ -11,3 +11,4 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(extra="ignore")
 
     contract_path: Path = DEFAULT_CONTRACT_PATH
+    database_url: str = "sqlite:///./notes.sqlite"
