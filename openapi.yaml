@@ -4147,7 +4147,7 @@ components:
         explanation: Add the rollback trigger.
         proposalDiff:
           title: ''
-          body: "--- base/body\n+++ proposed/body\n@@ -1,4 +1,5 @@\n ## Incident\n \n - Page the on-call\n - Open a channel\n+- Roll back if the error rate doubles\n"
+          body: "--- base/body\n+++ proposed/body\n@@ -2,3 +2,4 @@\n \n - Page the on-call\n - Open a channel\n+- Roll back if the error rate doubles\n"
         rejectionReason: null
         rejectedBy: null
         mergeRecord: null
@@ -4173,7 +4173,7 @@ components:
         explanation: Add the rollback trigger.
         proposalDiff:
           title: ''
-          body: "--- base/body\n+++ proposed/body\n@@ -1,4 +1,5 @@\n ## Incident\n \n - Page the on-call\n - Open a channel\n+- Roll back if the error rate doubles\n"
+          body: "--- base/body\n+++ proposed/body\n@@ -2,3 +2,4 @@\n \n - Page the on-call\n - Open a channel\n+- Roll back if the error rate doubles\n"
         rejectionReason: null
         rejectedBy: null
         mergeRecord: null
@@ -4368,7 +4368,7 @@ components:
           explanation: Add the rollback trigger.
           proposalDiff:
             title: ''
-            body: "--- base/body\n+++ proposed/body\n@@ -1,4 +1,5 @@\n ## Incident\n \n - Page the on-call\n - Open a channel\n+- Roll back if the error rate doubles\n"
+            body: "--- base/body\n+++ proposed/body\n@@ -2,3 +2,4 @@\n \n - Page the on-call\n - Open a channel\n+- Roll back if the error rate doubles\n"
           rejectionReason: null
           rejectedBy: null
           mergeRecord:

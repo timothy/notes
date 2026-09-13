@@ -45,6 +45,12 @@ The major bump reflects new server behavior that implementers must handle, liste
 - The explicit `jsonSchemaDialect` declaration is gone. It named the OpenAPI 3.1 default dialect, so nothing
   changes for readers of the document, and Prism skips request-body validation when it is present.
 
+### Fixed
+
+- Three example diffs (`EditRequestAwaitingApproval`, `EditRequestApproved`, and the closed request inside
+  `MergeResultPeerApproval`) showed four context lines in `proposalDiff`; the contract requires three, as the
+  other examples already did.
+
 ## [1.0.0] - 2026-09-12
 
 Initial contract: 37 operations over users, teams, memberships, notes, shares, comments, and edit requests with
