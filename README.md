@@ -47,6 +47,7 @@ These are the price of the guarantee above.
 | --- | --- |
 | `openapi.yaml` | The contract and source of truth. Operation descriptions and schemas are normative. |
 | `docs/design-guide.md` | The rules behind the contract: model, permissions, edit requests and merges, lifecycle, HTTP conventions, and acceptance scenarios. |
+| `docs/architecture.md` | Proposed implementation architecture, editable Mermaid diagram, module responsibilities, and transaction boundaries. |
 | `scripts/validate_contract.py` | Twelve static checks that keep the spec and the guide consistent with each other. |
 | `tests/negative_cases.yaml` | Payloads that must fail or must pass schema validation. |
 | `requirements-dev.txt` | Dependencies for the checker. |
