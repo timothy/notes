@@ -129,3 +129,109 @@ def test_eight_concurrent_first_requests_provision_one_user(app: FastAPI, issuer
     assert [status for status, _ in results] == [200] * 8
     assert len({user_id for _, user_id in results}) == 1
     assert user_count(app, "stampede") == 1
+
+
+# -- the directory --------------------------------------------------------------------------------------
+
+
+def provision(client: ContractClient, clock: FakeClock, *personas: Persona, step: timedelta) -> list[str]:
+    """Provision each persona one clock step apart; returns their ids in creation order."""
+    ids = []
+    for persona in personas:
+        ids.append(client.get("/v1/me", auth=persona).json()["id"])
+        clock.advance(step)
+    return ids
+
+
+def test_the_directory_is_readable_by_every_user_and_sorted_newest_first(
+    client: ContractClient, clock: FakeClock, ada: Persona, ben: Persona, cara: Persona
+) -> None:
+    ids = provision(client, clock, ada, ben, cara, step=timedelta(seconds=1))
+    response = client.get("/v1/users", auth=cara)
+    assert response.status_code == 200
+    body = response.json()
+    assert [item["id"] for item in body["items"]] == list(reversed(ids))
+    assert body["nextCursor"] is None
+    assert body["items"][0]["displayName"] == "Cara Nakamura"
+    assert body["items"][0]["createdAt"] == "2026-09-13T12:00:02.000000Z"
+
+
+def test_the_directory_pages_with_cursors(
+    client: ContractClient,
+    clock: FakeClock,
+    issuer: LocalIssuer,
+    ada: Persona,
+    ben: Persona,
+    cara: Persona,
+    dan: Persona,
+) -> None:
+    eve = issuer.persona("eve", "Eve Lindqvist")
+    ids = provision(client, clock, ada, ben, cara, dan, eve, step=timedelta(minutes=1))
+    newest_first = list(reversed(ids))
+    first = client.get("/v1/users", auth=ada, params={"limit": 2}).json()
+    assert [item["id"] for item in first["items"]] == newest_first[:2]
+    second = client.get("/v1/users", auth=ada, params={"limit": 2, "cursor": first["nextCursor"]}).json()
+    assert [item["id"] for item in second["items"]] == newest_first[2:4]
+    third = client.get("/v1/users", auth=ada, params={"limit": 2, "cursor": second["nextCursor"]}).json()
+    assert [item["id"] for item in third["items"]] == newest_first[4:]
+    assert third["nextCursor"] is None
+
+
+def test_ties_on_created_at_page_deterministically_by_id(
+    client: ContractClient, ada: Persona, ben: Persona
+) -> None:
+    ids = sorted(
+        provision(client, FakeClock(datetime(2026, 9, 13, 12, 0, tzinfo=UTC)), ada, ben, step=timedelta(0))
+    )
+    first = client.get("/v1/users", auth=ada, params={"limit": 1}).json()
+    assert [item["id"] for item in first["items"]] == [ids[1]]
+    second = client.get("/v1/users", auth=ada, params={"limit": 1, "cursor": first["nextCursor"]}).json()
+    assert [item["id"] for item in second["items"]] == [ids[0]]
+    assert second["nextCursor"] is None
+
+
+@pytest.mark.parametrize("limit", ["0", "101", "abc", "-1", "1.5"])
+def test_an_out_of_range_limit_is_422_naming_the_parameter(
+    client: ContractClient, ada: Persona, limit: str
+) -> None:
+    response = client.get("/v1/users", auth=ada, params={"limit": limit})
+    assert response.status_code == 422
+    assert response.json()["code"] == "validation_failed"
+    assert [(e["location"], e["pointer"]) for e in response.json()["errors"]] == [("query", "limit")]
+
+
+def test_a_cursor_reused_with_other_settings_or_by_another_caller_is_400(
+    client: ContractClient, clock: FakeClock, ada: Persona, ben: Persona, cara: Persona
+) -> None:
+    provision(client, clock, ada, ben, cara, step=timedelta(seconds=1))
+    cursor = client.get("/v1/users", auth=ada, params={"limit": 2}).json()["nextCursor"]
+    assert cursor is not None
+    for params, persona in (
+        ({"limit": 3, "cursor": cursor}, ada),
+        ({"limit": 2, "cursor": cursor}, ben),
+        ({"limit": 2, "cursor": "garbage"}, ada),
+        ({"limit": 2, "cursor": cursor[:-4] + "AAAA"}, ada),
+    ):
+        response = client.get("/v1/users", auth=persona, params=params)
+        assert response.status_code == 400, params
+        assert response.json()["code"] == "invalid_cursor"
+    assert client.get("/v1/users", auth=ada, params={"limit": 2, "cursor": cursor}).status_code == 200
+
+
+@pytest.mark.parametrize("cursor", ["", "x" * 4097], ids=["empty", "oversize"])
+def test_a_cursor_outside_the_parameter_bounds_is_422(
+    client: ContractClient, ada: Persona, cursor: str
+) -> None:
+    response = client.get("/v1/users", auth=ada, params={"cursor": cursor})
+    assert response.status_code == 422
+    assert [(e["location"], e["pointer"]) for e in response.json()["errors"]] == [("query", "cursor")]
+
+
+def test_a_user_can_be_fetched_by_id(client: ContractClient, ada: Persona, ben: Persona) -> None:
+    me = client.get("/v1/me", auth=ada).json()
+    assert client.get(f"/v1/users/{me['id']}", auth=ben).json() == me
+    assert client.get(f"/v1/users/{uuid.uuid4()}", auth=ben).status_code == 404
+    response = client.get("/v1/users/not-a-uuid", auth=ben)
+    assert response.status_code == 422
+    assert [(e["location"], e["pointer"]) for e in response.json()["errors"]] == [("path", "userId")]
+    assert client.get(f"/v1/users/{me['id']}").status_code == 401

@@ -10,11 +10,16 @@ FastAPI 0.141 wraps included routers in a private route object, and the test har
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any
+from typing import Annotated, Any
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Query
 
 API_PREFIX = "/v1"
+
+# The contract's pagination parameters. FastAPI's validation error becomes the 422 Problem naming the
+# parameter (``location: query``); the cursor's meaning is checked later by ``notes_api.cursors``.
+Limit = Annotated[int, Query(ge=1, le=100)]
+Cursor = Annotated[str | None, Query(min_length=1, max_length=4096)]
 
 
 def add_route(app: FastAPI, method: str, path: str, endpoint: Callable[..., Any]) -> None:
