@@ -1,4 +1,9 @@
-"""Edit requests: submission under the note lock; inspection, lists, and transitions follow in this slice."""
+"""Edit requests: submission, inspection, the two lists, and the proposer's and owners' transitions.
+
+Request-scoped mutations lock the note first, then the request (``edit_requests.inspect(lock=True)``), so
+the ladder is 404 (note invisible or not owner/proposer), 403, If-Match (428/400), 412, 409
+``request_not_open``, 409 ``note_not_active``, semantic 422, then the write.
+"""
 
 from __future__ import annotations
 
@@ -8,6 +13,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from notes_api import serializers, uow
+from notes_api.etags import parse_if_match
 from notes_api.generated.schemas import EditRequestStatus, InboxView, NoteState
 from notes_api.http.bodies import parse_body
 from notes_api.http.deps import CurrentUser
@@ -21,6 +27,9 @@ def install_edit_request_routes(app: FastAPI) -> None:
     add_route(app, "GET", "/notes/{noteId}/edit-requests", list_note_edit_requests)
     add_route(app, "GET", "/edit-requests", list_edit_requests)
     add_route(app, "GET", "/edit-requests/{requestId}", get_edit_request)
+    add_route(app, "PATCH", "/edit-requests/{requestId}", revise_edit_request)
+    add_route(app, "POST", "/edit-requests/{requestId}/withdraw", withdraw_edit_request)
+    add_route(app, "POST", "/edit-requests/{requestId}/reject", reject_edit_request)
 
 
 def list_note_edit_requests(
@@ -96,3 +105,50 @@ def create_edit_request(user: CurrentUser, request: Request, noteId: uuid.UUID) 
         payload, etag = serializers.edit_request(rv), rv.etag
     location = f"{API_PREFIX}/edit-requests/{payload['id']}"
     return serializers.json_response(payload, status=201, headers={"Location": location, "ETag": etag})
+
+
+def revise_edit_request(user: CurrentUser, request: Request, requestId: uuid.UUID) -> JSONResponse:
+    """Body shape, then the request under the note lock (404), the proposer with propose_edit (403), the
+    request's If-Match (428/400), 412, 409 request_not_open, 409 note_not_active, 422, then the write."""
+    body = parse_body(request, "ReviseEditRequest")
+    now = clock(request).now()
+    with sessions(request)() as session, uow.transaction(session, "revise_edit_request"):
+        rv = edit_requests.inspect(session, caller=user, request_id=requestId, now=now, lock=True)
+        edit_requests.require_proposer_with_propose(rv, user)
+        edit_requests.require_version(rv, parse_if_match(request.headers.get("if-match")))
+        proposed = body.get("proposedContent")
+        rv = edit_requests.revise(
+            session,
+            rv=rv,
+            proposed=Content(proposed["title"], proposed["body"]) if proposed is not None else None,
+            explanation=body.get("explanation"),
+            explanation_given="explanation" in body,
+            now=now,
+        )
+        payload, etag = serializers.edit_request(rv), rv.etag
+    return serializers.json_response(payload, headers={"ETag": etag})
+
+
+def withdraw_edit_request(user: CurrentUser, request: Request, requestId: uuid.UUID) -> JSONResponse:
+    """No request body: whatever arrives is ignored, as for restoreNote."""
+    now = clock(request).now()
+    with sessions(request)() as session, uow.transaction(session, "withdraw_edit_request"):
+        rv = edit_requests.inspect(session, caller=user, request_id=requestId, now=now, lock=True)
+        edit_requests.require_proposer(rv, user)
+        edit_requests.require_version(rv, parse_if_match(request.headers.get("if-match")))
+        rv = edit_requests.withdraw(session, rv=rv, now=now)
+        payload, etag = serializers.edit_request(rv), rv.etag
+    return serializers.json_response(payload, headers={"ETag": etag})
+
+
+def reject_edit_request(user: CurrentUser, request: Request, requestId: uuid.UUID) -> JSONResponse:
+    """The body is optional; an empty one under any content type counts as omitted."""
+    body = parse_body(request, "RejectEditRequest", required=False)
+    now = clock(request).now()
+    with sessions(request)() as session, uow.transaction(session, "reject_edit_request"):
+        rv = edit_requests.inspect(session, caller=user, request_id=requestId, now=now, lock=True)
+        notes.require_owner(rv.note)
+        edit_requests.require_version(rv, parse_if_match(request.headers.get("if-match")))
+        rv = edit_requests.reject(session, rv=rv, rejecter=user, reason=body.get("reason"), now=now)
+        payload, etag = serializers.edit_request(rv), rv.etag
+    return serializers.json_response(payload, headers={"ETag": etag})

@@ -19,7 +19,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 
-from sqlalchemy import Select, select
+from sqlalchemy import Select, delete, select
 from sqlalchemy.orm import Session
 
 from notes_api import cursors, etags
@@ -294,3 +294,102 @@ def create(
     session.add(request)
     session.flush()
     return RequestView(request, view, [])
+
+
+# -- transitions ----------------------------------------------------------------------------------------
+
+
+def require_proposer(rv: RequestView, caller: User) -> None:
+    """Withdraw is the proposer's alone; an owner who did not propose is ``403``."""
+    if rv.request.proposer_id != caller.id:
+        raise Forbidden()
+
+
+def require_proposer_with_propose(rv: RequestView, caller: User) -> None:
+    """Revise is the proposer's, while they hold current ``propose_edit`` (owners always do)."""
+    if rv.request.proposer_id != caller.id or not rv.note.access.propose:
+        raise Forbidden()
+
+
+def require_version(rv: RequestView, if_match: str) -> None:
+    if if_match != rv.etag:
+        raise PreconditionFailed()
+
+
+def require_open_and_active(rv: RequestView) -> None:
+    """A closed record is immutable whatever happens to its note, so ``request_not_open`` comes before the
+    transient ``note_not_active``."""
+    if not rv.is_open:
+        raise Conflict("request_not_open")
+    if permissions.is_trashed(rv.note.note):
+        raise Conflict("note_not_active")
+
+
+def revise(
+    session: Session,
+    *,
+    rv: RequestView,
+    proposed: Content | None,
+    explanation: str | None,
+    explanation_given: bool,
+    now: datetime,
+) -> RequestView:
+    """Revise an open request whose proposer and version were already checked.
+
+    The base never changes. A proposal equal to it is ``422``. A change to the stored proposal writes both
+    fields, deletes every approval, and takes a new version; an explanation change alone (``null`` clears,
+    ``""`` is stored) keeps the approvals and takes a new version; no effective change returns the request
+    as it is. Re-sending the current proposal with a new explanation is an explanation-only revision.
+    """
+    require_open_and_active(rv)
+    request = rv.request
+    if proposed is not None and (proposed.title, proposed.body) == (request.base_title, request.base_body):
+        raise ValidationFailed([EMPTY_PROPOSAL_ERROR], detail=EMPTY_PROPOSAL_DETAIL)
+    content_changed = proposed is not None and (proposed.title, proposed.body) != (
+        request.proposed_title,
+        request.proposed_body,
+    )
+    explanation_changed = explanation_given and explanation != request.explanation
+    if not content_changed and not explanation_changed:
+        return rv
+    approvals = rv.approvals
+    if proposed is not None and content_changed:
+        request.proposed_title, request.proposed_body = proposed.title, proposed.body
+        session.execute(delete(Approval).where(Approval.request_id == request.id))
+        approvals = []
+    if explanation_changed:
+        request.explanation = explanation
+    request.version = etags.new_version()
+    request.updated_at = now
+    session.flush()
+    return RequestView(request, rv.note, approvals)
+
+
+def withdraw(session: Session, *, rv: RequestView, now: datetime) -> RequestView:
+    """Close an open request as ``withdrawn``; the note is untouched."""
+    require_open_and_active(rv)
+    return _close(session, rv, WITHDRAWN, now)
+
+
+def reject(
+    session: Session, *, rv: RequestView, rejecter: User, reason: str | None, now: datetime
+) -> RequestView:
+    """Close an open request as ``rejected``, recording who did it and, optionally, why."""
+    require_open_and_active(rv)
+    rv.request.rejected_by = rejecter.id
+    rv.request.rejection_reason = reason
+    return _close(session, rv, REJECTED, now)
+
+
+def _close(session: Session, rv: RequestView, status: str, now: datetime) -> RequestView:
+    """Every close freezes ``requiredApprovals`` as it stood, sets ``closed_at``, and takes a new version, so
+    an old ETag is ``412`` afterwards and the current one meets ``409 request_not_open``."""
+    frozen = rv.required_approvals()  # while the request is still open, so the live value
+    request = rv.request
+    request.status = status
+    request.closed_at = now
+    request.required_approvals_at_close = frozen
+    request.version = etags.new_version()
+    request.updated_at = now
+    session.flush()
+    return RequestView(request, rv.note, rv.approvals)

@@ -525,3 +525,351 @@ def test_reading_a_request_costs_a_bounded_number_of_statements(
         event.remove(app.state.engine, "before_cursor_execute", record)
     selects = [s for s in statements if s.lstrip().upper().startswith("SELECT")]
     assert len(selects) <= 8, selects  # caller, the joined pair, access (3), owners, tags, approvals
+
+
+# -- revise, withdraw, reject ---------------------------------------------------------------------------
+
+REJECTION_REASON = "Staged deploys are covered by the deployment runbook."  # RejectEditRequestRequest
+
+
+def revise(
+    client: ContractClient,
+    persona: Persona,
+    request_id: str,
+    etag: str | None,
+    body: Any = None,
+    **kwargs: Any,
+) -> httpx.Response:
+    return client.patch(f"/v1/edit-requests/{request_id}", auth=persona, if_match=etag, json=body, **kwargs)
+
+
+def withdraw(
+    client: ContractClient, persona: Persona, request_id: str, etag: str | None, **kwargs: Any
+) -> httpx.Response:
+    return client.post(f"/v1/edit-requests/{request_id}/withdraw", auth=persona, if_match=etag, **kwargs)
+
+
+def reject(
+    client: ContractClient,
+    persona: Persona,
+    request_id: str,
+    etag: str | None,
+    body: Any = None,
+    **kwargs: Any,
+) -> httpx.Response:
+    return client.post(
+        f"/v1/edit-requests/{request_id}/reject", auth=persona, if_match=etag, json=body, **kwargs
+    )
+
+
+def seed_approvals(app: FastAPI, request_id: str, *user_ids: str) -> None:
+    with app.state.session_factory() as session, session.begin():
+        for offset, user_id in enumerate(user_ids):
+            session.add(
+                Approval(
+                    request_id=uuid.UUID(request_id),
+                    user_id=uuid.UUID(user_id),
+                    approved_at=START + timedelta(minutes=offset + 1),
+                )
+            )
+
+
+def approvers(client: ContractClient, persona: Persona, request_id: str) -> list[str]:
+    return [entry["userId"] for entry in get_request(client, persona, request_id).json()["approvals"]]
+
+
+def test_the_contracts_revision_advances_the_etag_and_recomputes_the_diff(
+    client: ContractClient, clock: FakeClock, examples: dict[str, Any], ada: Persona, ben: Persona
+) -> None:
+    note_id, note_etag, request_id, etag = submitted(client, ada, ben)
+    clock.advance(timedelta(minutes=1))
+    revised = revise(client, ben, request_id, etag, examples["ReviseEditRequestRequest"])
+    assert revised.status_code == 200, revised.text
+    body = revised.json()
+    assert ETAG.match(revised.headers["ETag"]) and revised.headers["ETag"] != etag
+    assert body["proposedContent"] == examples["ReviseEditRequestRequest"]["proposedContent"]
+    assert body["explanation"] == examples["ReviseEditRequestRequest"]["explanation"]
+    assert body["baseContent"] == {"title": CREATE_NOTE_REQUEST["title"], "body": CREATE_NOTE_REQUEST["body"]}
+    assert body["proposalDiff"]["title"].startswith("--- base/title\n+++ proposed/title\n")
+    assert (
+        "+Release runbook\n" in body["proposalDiff"]["title"]
+        and "+- Deploy (staged)\n" in body["proposalDiff"]["body"]
+    )
+    assert body["updatedAt"] == "2026-09-13T12:01:00.000000Z" and body["createdAt"] == START_TS
+    assert body["status"] == "open" and body["closedAt"] is None
+    assert get_request(client, ada, request_id).json() == body
+    assert note_state(client, ada, note_id)[0] == note_etag  # the note is untouched
+
+
+def test_explanation_only_revisions_keep_approvals_and_content_changes_delete_them(
+    client: ContractClient, app: FastAPI, ada: Persona, ben: Persona
+) -> None:
+    _, _, request_id, etag = submitted(client, ada, ben)
+    ada_id = me(client, ada)
+    seed_approvals(app, request_id, ada_id)
+    cleared = revise(client, ben, request_id, etag, {"explanation": None})
+    assert cleared.status_code == 200 and cleared.json()["explanation"] is None
+    assert cleared.headers["ETag"] != etag and approvers(client, ada, request_id) == [ada_id]
+    emptied = revise(client, ben, request_id, cleared.headers["ETag"], {"explanation": ""})
+    assert emptied.status_code == 200 and emptied.json()["explanation"] == ""
+    assert approvers(client, ada, request_id) == [ada_id]
+    current = emptied.json()["proposedContent"]
+    same_content = revise(
+        client, ben, request_id, emptied.headers["ETag"], {"proposedContent": current, "explanation": "again"}
+    )
+    assert same_content.status_code == 200 and same_content.json()["explanation"] == "again"
+    assert approvers(client, ada, request_id) == [ada_id]  # the stored proposal did not change
+    changed = revise(
+        client,
+        ben,
+        request_id,
+        same_content.headers["ETag"],
+        {"proposedContent": {**current, "title": "Release runbook"}},
+    )
+    assert changed.status_code == 200 and changed.json()["approvals"] == []
+    assert changed.json()["proposedContent"]["title"] == "Release runbook"
+    assert changed.json()["explanation"] == "again"  # untouched by a content-only revision
+    assert approvers(client, ada, request_id) == []
+
+
+def test_an_identical_resubmission_is_a_no_op(
+    client: ContractClient, clock: FakeClock, ada: Persona, ben: Persona
+) -> None:
+    _, _, request_id, etag = submitted(client, ada, ben)
+    before = get_request(client, ben, request_id).json()
+    clock.advance(timedelta(minutes=5))
+    same = revise(
+        client,
+        ben,
+        request_id,
+        etag,
+        {"proposedContent": before["proposedContent"], "explanation": before["explanation"]},
+    )
+    assert same.status_code == 200 and same.headers["ETag"] == etag and same.json() == before
+    only_content = revise(client, ben, request_id, etag, {"proposedContent": before["proposedContent"]})
+    assert only_content.status_code == 200 and only_content.headers["ETag"] == etag
+    assert (
+        revise(client, ben, request_id, etag, {"explanation": before["explanation"]}).headers["ETag"] == etag
+    )
+
+
+@pytest.mark.parametrize(
+    ("body", "pointers"),
+    [
+        ({}, [""]),
+        ({"proposedContent": {"title": "t"}}, ["/proposedContent/body"]),
+        ({"proposedContent": {"title": "t", "body": "b", "tags": []}}, ["/proposedContent/tags"]),
+        ({"baseNoteETag": '"x"', "explanation": "x"}, ["/baseNoteETag"]),
+        ({"baseContent": {"title": "t", "body": "b"}}, ["/baseContent"]),
+        ({"explanation": "x" * 10001}, ["/explanation"]),
+        ({"explanation": "a\x00b"}, ["/explanation"]),
+    ],
+    ids=["empty", "incomplete content", "tags in content", "base etag", "forged base", "long", "NUL"],
+)
+def test_a_revision_body_is_validated_before_the_precondition(
+    client: ContractClient, ada: Persona, ben: Persona, body: dict[str, Any], pointers: list[str]
+) -> None:
+    _, _, request_id, etag = submitted(client, ada, ben)
+    with_etag = revise(client, ben, request_id, etag, body)
+    assert with_etag.status_code == 422, with_etag.text
+    assert [pointer for _, pointer in errors(with_etag)] == pointers
+    assert revise(client, ben, request_id, None, body).status_code == 422  # body shape before 428
+    assert get_request(client, ben, request_id).headers["ETag"] == etag
+
+
+def test_a_revision_equal_to_the_base_is_422_and_preconditions_apply(
+    client: ContractClient, examples: dict[str, Any], ada: Persona, ben: Persona
+) -> None:
+    _, _, request_id, etag = submitted(client, ada, ben)
+    base = get_request(client, ben, request_id).json()["baseContent"]
+    empty = revise(client, ben, request_id, etag, {"proposedContent": base})
+    assert empty.status_code == 422 and empty.json() == examples["ProblemEmptyProposal"]
+    assert revise(client, ben, request_id, None, {"explanation": "x"}).status_code == 428
+    for bad in ('W/"x"', "*", "x"):
+        response = revise(client, ben, request_id, bad, {"explanation": "x"})
+        assert response.status_code == 400 and errors(response) == [("header", "If-Match")]
+    assert revise(client, ben, request_id, STALE, {"explanation": "x"}).status_code == 412
+    assert (
+        revise(client, ben, request_id, etag, content="x", headers={"Content-Type": "text/plain"}).status_code
+        == 415
+    )
+    assert get_request(client, ben, request_id).headers["ETag"] == etag
+
+
+def test_who_may_revise_withdraw_and_reject(
+    client: ContractClient, clock: FakeClock, ada: Persona, ben: Persona, dan: Persona
+) -> None:
+    note_id, note_etag = proposer_note(client, ada, ben)
+    share(client, ada, note_id, user(client, dan), "read")
+    first = submit(client, ben, note_id, proposal(note_etag, explanation="first"))
+    second = submit(client, ben, note_id, proposal(note_etag, explanation="second"))
+    third = submit(client, ben, note_id, proposal(note_etag, explanation="third"))
+    r1, e1 = first.json()["id"], first.headers["ETag"]
+    r2, e2 = second.json()["id"], second.headers["ETag"]
+    r3, e3 = third.json()["id"], third.headers["ETag"]
+    # An owner who did not propose can neither revise nor withdraw, but may reject; a non-owner proposer
+    # cannot reject; another reader cannot even see the request.
+    assert revise(client, ada, r1, e1, {"explanation": "x"}).status_code == 403
+    assert withdraw(client, ada, r1, e1).status_code == 403
+    assert revise(client, ada, r1, None, {"explanation": "x"}).status_code == 403  # 403 precedes 428
+    refused = reject(client, ben, r1, e1)
+    assert refused.status_code == 403 and refused.json()["code"] == "forbidden"
+    for response in (
+        revise(client, dan, r1, e1, {"explanation": "x"}),
+        withdraw(client, dan, r1, e1),
+        reject(client, dan, r1, e1),
+    ):
+        assert response.status_code == 404
+    # A proposer downgraded to read may withdraw but not revise.
+    share_id = client.get(f"/v1/notes/{note_id}/shares", auth=ada).json()["items"][0]["id"]
+    client.patch(f"/v1/notes/{note_id}/shares/{share_id}", auth=ada, json={"permissions": ["read"]})
+    assert revise(client, ben, r1, e1, {"explanation": "x"}).status_code == 403
+    clock.advance(timedelta(minutes=1))
+    withdrawn = withdraw(client, ben, r1, e1)
+    assert withdrawn.status_code == 200, withdrawn.text
+    assert withdrawn.json()["status"] == "withdrawn" and withdrawn.headers["ETag"] != e1
+    assert withdrawn.json()["closedAt"] == withdrawn.json()["updatedAt"] == "2026-09-13T12:01:00.000000Z"
+    assert withdrawn.json()["rejectedBy"] is None and withdrawn.json()["mergeRecord"] is None
+    # A proposer without read access cannot withdraw; the owner rejects with the example's reason.
+    client.delete(f"/v1/notes/{note_id}/shares/{share_id}", auth=ada)
+    assert withdraw(client, ben, r2, e2).status_code == 404
+    rejected = reject(client, ada, r2, e2, {"reason": REJECTION_REASON})
+    assert rejected.status_code == 200, rejected.text
+    assert rejected.json()["status"] == "rejected" and rejected.json()["rejectedBy"] == me(client, ada)
+    assert rejected.json()["rejectionReason"] == REJECTION_REASON and rejected.headers["ETag"] != e2
+    assert rejected.json()["closedAt"] == "2026-09-13T12:01:00.000000Z"
+    # Rejection without a body, and the note is unchanged by every transition.
+    plain = reject(client, ada, r3, e3)
+    assert plain.status_code == 200 and plain.json()["rejectionReason"] is None
+    assert plain.json()["rejectedBy"] == me(client, ada)
+    assert note_state(client, ada, note_id)[0] == note_etag
+    assert get_request(client, ada, r1).json()["status"] == "withdrawn"  # the owner still reads them all
+
+
+def test_an_owner_who_proposed_may_withdraw_and_reject_their_own_request(
+    client: ContractClient, ada: Persona
+) -> None:
+    created = create(client, ada)
+    note_id, note_etag = created.json()["id"], created.headers["ETag"]
+    one = submit(client, ada, note_id, proposal(note_etag, explanation="one"))
+    two = submit(client, ada, note_id, proposal(note_etag, explanation="two"))
+    assert withdraw(client, ada, one.json()["id"], one.headers["ETag"]).json()["status"] == "withdrawn"
+    rejected = reject(client, ada, two.json()["id"], two.headers["ETag"], {"reason": None})
+    assert rejected.json()["status"] == "rejected" and rejected.json()["rejectedBy"] == me(client, ada)
+    assert rejected.json()["rejectionReason"] is None
+
+
+def test_optional_bodies_on_reject_and_no_body_on_withdraw(
+    client: ContractClient, ada: Persona, ben: Persona
+) -> None:
+    note_id, note_etag = proposer_note(client, ada, ben)
+
+    def fresh() -> tuple[str, str]:
+        response = submit(client, ben, note_id, proposal(note_etag))
+        return str(response.json()["id"]), str(response.headers["ETag"])
+
+    plain = {"Content-Type": "text/plain"}
+    r, e = fresh()
+    assert reject(client, ada, r, e, {}).json()["rejectionReason"] is None
+    r, e = fresh()
+    assert reject(client, ada, r, e, content=b"", headers=plain).status_code == 200  # empty is omitted
+    r, e = fresh()
+    assert reject(client, ada, r, e, content="x", headers=plain).status_code == 415
+    assert (
+        reject(client, ada, r, e, content="null", headers={"Content-Type": "application/json"}).status_code
+        == 422
+    )
+    assert errors(reject(client, ada, r, e, {"reason": "x" * 10001})) == [("body", "/reason")]
+    assert errors(reject(client, ada, r, e, {"reason": "x", "rejectedBy": "me"})) == [("body", "/rejectedBy")]
+    assert reject(client, ada, r, None, {"reason": "x"}).status_code == 428
+    assert reject(client, ada, r, STALE, {"reason": "x"}).status_code == 412
+    assert get_request(client, ada, r).json()["status"] == "open"
+    r, e = fresh()
+    assert withdraw(client, ben, r, e, content="anything", headers=plain).status_code == 200  # ignored
+    r, e = fresh()
+    assert withdraw(client, ben, r, None).status_code == 428
+    assert withdraw(client, ben, r, STALE).status_code == 412
+    assert withdraw(client, ben, r, e, json={"unexpected": True}).status_code == 200
+
+
+def test_closing_freezes_required_approvals_and_closed_records_are_immutable(
+    client: ContractClient, app: FastAPI, ada: Persona, ben: Persona, cara: Persona
+) -> None:
+    note_id, note_etag, request_id, etag = submitted(client, ada, ben)
+    with app.state.session_factory() as session, session.begin():
+        session.add(
+            NoteOwner(
+                note_id=uuid.UUID(note_id), user_id=uuid.UUID(me(client, cara)), position=1, added_at=START
+            )
+        )
+        note = session.get(Note, uuid.UUID(note_id))
+        assert note is not None
+        note.review_mode, note.review_required_approvals = "peer_approval", 1
+    assert get_request(client, ada, request_id).json()["requiredApprovals"] == 2
+    rejected = reject(client, ada, request_id, etag)
+    assert rejected.status_code == 200 and rejected.json()["requiredApprovals"] == 2
+    closed_etag = rejected.headers["ETag"]
+    with app.state.session_factory() as session, session.begin():
+        note = session.get(Note, uuid.UUID(note_id))
+        assert note is not None
+        note.review_mode, note.review_required_approvals = "self_merge", None  # live value would be 0
+    assert get_request(client, ada, request_id).json()["requiredApprovals"] == 2  # frozen at closing
+    # Closed records: the old ETag is 412, the current one 409 request_not_open, for every transition.
+    for stale in (
+        revise(client, ben, request_id, etag, {"explanation": "x"}),
+        withdraw(client, ben, request_id, etag),
+        reject(client, ada, request_id, etag),
+    ):
+        assert stale.status_code == 412
+    for current in (
+        revise(client, ben, request_id, closed_etag, {"explanation": "x"}),
+        withdraw(client, ben, request_id, closed_etag),
+        reject(client, ada, request_id, closed_etag),
+    ):
+        assert current.status_code == 409 and current.json()["code"] == "request_not_open"
+    # ... and a closed request stays request_not_open when its note is trashed afterwards.
+    trash_etag = client.delete(f"/v1/notes/{note_id}", auth=ada, if_match=note_etag).headers["ETag"]
+    assert reject(client, ada, request_id, closed_etag).json()["code"] == "request_not_open"
+    assert reject(client, ada, request_id, etag).status_code == 412
+    assert client.post(f"/v1/notes/{note_id}/restore", auth=ada, if_match=trash_etag).status_code == 200
+    assert get_request(client, ada, request_id).headers["ETag"] == closed_etag
+
+
+@pytest.mark.acceptance("Trash")
+def test_a_trashed_note_freezes_its_open_requests(client: ContractClient, ada: Persona) -> None:
+    created = create(client, ada)
+    note_id, note_etag = created.json()["id"], created.headers["ETag"]
+    own = submit(client, ada, note_id, proposal(note_etag, explanation="own"))
+    request_id, etag = own.json()["id"], own.headers["ETag"]
+    trash_etag = client.delete(f"/v1/notes/{note_id}", auth=ada, if_match=note_etag).headers["ETag"]
+    for frozen in (
+        revise(client, ada, request_id, etag, {"explanation": "x"}),
+        withdraw(client, ada, request_id, etag),
+        reject(client, ada, request_id, etag),
+    ):
+        assert frozen.status_code == 409 and frozen.json()["code"] == "note_not_active"
+    assert withdraw(client, ada, request_id, STALE).status_code == 412  # the version check still comes first
+    assert get_request(client, ada, request_id).json()["status"] == "open"
+    assert client.post(f"/v1/notes/{note_id}/restore", auth=ada, if_match=trash_etag).status_code == 200
+    assert withdraw(client, ada, request_id, etag).json()["status"] == "withdrawn"
+
+
+def test_a_competing_withdrawal_committed_first_makes_the_rejection_stale(
+    client: ContractClient, app: FastAPI, ada: Persona, ben: Persona, restore_hooks: None
+) -> None:
+    _, _, request_id, etag = submitted(client, ada, ben)
+    competitor = ContractClient(app)
+    fired: list[str] = []
+
+    def before_begin(op: str) -> None:
+        if op == "reject_edit_request" and not fired:
+            fired.append(op)
+            assert withdraw(competitor, ben, request_id, etag).status_code == 200
+
+    uow.hooks.before_begin = before_begin
+    stale = reject(client, ada, request_id, etag)
+    assert stale.status_code == 412 and fired == ["reject_edit_request"]
+    seen = get_request(client, ada, request_id)
+    assert seen.json()["status"] == "withdrawn"
+    current = reject(client, ada, request_id, seen.headers["ETag"])
+    assert current.status_code == 409 and current.json()["code"] == "request_not_open"
