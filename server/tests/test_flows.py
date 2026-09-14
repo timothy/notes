@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import copy
+from datetime import timedelta
 from typing import Any
 
 from tests.contract_client import ContractClient
-from tests.support import Persona
+from tests.support import FakeClock, Persona
 from tests.test_notes import me
 
 
@@ -246,3 +247,210 @@ def test_preview_and_merge_unchanged_or_with_owner_edits(
     assert landed.json()["editRequest"]["proposedContent"] == conflicting["proposedContent"]
     assert landed.json()["editRequest"]["mergeRecord"]["content"] == resolution["finalContent"]
     assert landed.json()["note"]["tags"] == ["release"]
+
+
+def test_protect_a_note_and_merge_with_peer_approval(
+    client: ContractClient,
+    clock: FakeClock,
+    examples: dict[str, Any],
+    ada: Persona,
+    ben: Persona,
+    cara: Persona,
+) -> None:
+    """Section 5, "Protect a note and merge with peer approval": Ada adds Cara, requires one peer approval,
+    is refused a direct edit, proposes instead, Cara approves, Ada merges; then the guide's alternatives and
+    Cara's departure. Cara's request comment waits for slice 12. Every response equals the contract's example
+    once ids, versions, and timestamps are substituted."""
+    ada_id, ben_id, cara_id = me(client, ada), me(client, ben), me(client, cara)
+    protected = examples["NoteRunbookProtected"]
+
+    def stamp(minutes: int) -> str:
+        return f"2026-09-13T{12 + minutes // 60:02d}:{minutes % 60:02d}:00.000000Z"
+
+    def note_like(example: dict[str, Any], note_id: str, owners: list[str], updated: str) -> dict[str, Any]:
+        return {
+            **example,
+            "id": note_id,
+            "authorId": ada_id,
+            "ownerIds": owners,
+            "createdAt": stamp(0),
+            "updatedAt": updated,
+        }
+
+    # 1. Ada creates the runbook (runbook-v1): one owner, the default self_merge policy.
+    created = client.post(
+        "/v1/notes",
+        auth=ada,
+        json={"title": protected["title"], "body": protected["body"], "tags": protected["tags"]},
+    )
+    assert created.status_code == 201
+    note_id, v1 = created.json()["id"], created.headers["ETag"]
+    assert created.json()["ownerIds"] == [ada_id] and created.json()["reviewPolicy"]["mode"] == "self_merge"
+
+    # 2. She adds Cara: two owners, the note is now protected (runbook-v2).
+    clock.advance(timedelta(minutes=10))
+    added = client.post(
+        f"/v1/notes/{note_id}/owners",
+        auth=ada,
+        if_match=v1,
+        json={**examples["AddOwnerRequest"], "userId": cara_id},
+    )
+    assert added.status_code == 200, added.text
+    v2 = added.headers["ETag"]
+    assert added.json() == note_like(protected, note_id, [ada_id, cara_id], stamp(10))
+
+    # 3. She requires one peer approval (runbook-v3).
+    clock.advance(timedelta(minutes=10))
+    policy = client.patch(
+        f"/v1/notes/{note_id}/review-policy",
+        auth=ada,
+        if_match=v2,
+        json=examples["ReviewPolicyPeerApprovalRequest"],
+    )
+    assert policy.status_code == 200, policy.text
+    v3 = policy.headers["ETag"]
+    assert policy.json() == note_like(
+        examples["NoteRunbookPeerApproval"], note_id, [ada_id, cara_id], stamp(20)
+    )
+
+    # 4. A direct edit is refused; Ada submits an edit request instead (proposal-v1).
+    awaiting = examples["EditRequestAwaitingApproval"]
+    refused = client.patch(
+        f"/v1/notes/{note_id}", auth=ada, if_match=v3, json={"body": awaiting["proposedContent"]["body"]}
+    )
+    assert refused.status_code == 409 and refused.json()["code"] == "direct_edit_not_allowed"
+    clock.advance(timedelta(minutes=40))
+    submitted = client.post(
+        f"/v1/notes/{note_id}/edit-requests",
+        auth=ada,
+        json={
+            "baseNoteETag": v3,
+            "proposedContent": awaiting["proposedContent"],
+            "explanation": awaiting["explanation"],
+        },
+    )
+    assert submitted.status_code == 201, submitted.text
+    request_id, p1 = submitted.json()["id"], submitted.headers["ETag"]
+    request_like = {"id": request_id, "noteId": note_id, "proposerId": ada_id, "createdAt": stamp(60)}
+    assert submitted.json() == {**awaiting, **request_like, "updatedAt": stamp(60)}
+    # Cara sees it in her incoming inbox.
+    inbox = client.get("/v1/edit-requests", auth=cara)
+    assert [item["id"] for item in inbox.json()["items"]] == [request_id]
+    assert inbox.json()["items"][0]["requiredApprovals"] == 1
+
+    # 5. Before the approval Ada can neither merge nor supply finalContent.
+    early = client.post(
+        f"/v1/edit-requests/{request_id}/merge", auth=ada, if_match=p1, json={"expectedNoteETag": v3}
+    )
+    assert early.status_code == 409 and early.json()["code"] == "approval_required"
+    with_edits = client.post(
+        f"/v1/edit-requests/{request_id}/merge",
+        auth=ada,
+        if_match=p1,
+        json={"expectedNoteETag": v3, "finalContent": awaiting["proposedContent"]},
+    )
+    assert with_edits.status_code == 422 and with_edits.json() == examples["ProblemFinalContentNotAllowed"]
+
+    # 6. Cara approves (proposal-v2).
+    clock.advance(timedelta(minutes=10))
+    approved = client.post(f"/v1/edit-requests/{request_id}/approve", auth=cara, if_match=p1)
+    assert approved.status_code == 200, approved.text
+    p2 = approved.headers["ETag"]
+    assert approved.json() == {
+        **examples["EditRequestApproved"],
+        **request_like,
+        "updatedAt": stamp(70),
+        "approvals": [{"userId": cara_id, "approvedAt": stamp(70)}],
+    }
+
+    # 7. Ada previews and merges with the versions the preview reports.
+    previewed = client.post(f"/v1/edit-requests/{request_id}/preview", auth=ada).json()
+    assert previewed["requestETag"] == p2 and previewed["currentNoteETag"] == v3 and previewed["canMerge"]
+    clock.advance(timedelta(minutes=50))
+    merged = client.post(
+        f"/v1/edit-requests/{request_id}/merge",
+        auth=ada,
+        if_match=previewed["requestETag"],
+        json={"expectedNoteETag": previewed["currentNoteETag"]},
+    )
+    assert merged.status_code == 200, merged.text
+    result, example = merged.json(), examples["MergeResultPeerApproval"]
+    v4 = result["noteETag"]
+    assert result["note"] == note_like(example["note"], note_id, [ada_id, cara_id], stamp(120))
+    assert result["editRequest"] == {
+        **example["editRequest"],
+        **request_like,
+        "updatedAt": stamp(120),
+        "closedAt": stamp(120),
+        "approvals": [{"userId": cara_id, "approvedAt": stamp(70)}],
+        "mergeRecord": {
+            **example["editRequest"]["mergeRecord"],
+            "noteETag": v4,
+            "mergedBy": ada_id,
+            "mergedAt": stamp(120),
+        },
+    }
+    assert merged.headers["ETag"] == client.get(f"/v1/edit-requests/{request_id}", auth=ada).headers["ETag"]
+
+    # 8. Alternatively, on a second runbook, Cara merges Ada's proposal directly: her merge is the approval.
+    other = client.post(
+        "/v1/notes",
+        auth=ada,
+        json={"title": protected["title"], "body": protected["body"], "tags": protected["tags"]},
+    )
+    other_id = other.json()["id"]
+    o2 = client.post(
+        f"/v1/notes/{other_id}/owners", auth=ada, if_match=other.headers["ETag"], json={"userId": cara_id}
+    ).headers["ETag"]
+    o3 = client.patch(
+        f"/v1/notes/{other_id}/review-policy",
+        auth=ada,
+        if_match=o2,
+        json=examples["ReviewPolicyPeerApprovalRequest"],
+    ).headers["ETag"]
+    proposed = client.post(
+        f"/v1/notes/{other_id}/edit-requests",
+        auth=ada,
+        json={"baseNoteETag": o3, "proposedContent": awaiting["proposedContent"]},
+    )
+    direct = client.post(
+        f"/v1/edit-requests/{proposed.json()['id']}/merge",
+        auth=cara,
+        if_match=proposed.headers["ETag"],
+        json={"expectedNoteETag": o3},
+    )
+    assert direct.status_code == 200, direct.text
+    assert (
+        direct.json()["editRequest"]["approvals"] == []
+        and direct.json()["editRequest"]["mergeRecord"]["mergedBy"] == cara_id
+    )
+
+    # 9. Had Ben proposed the same change, two distinct owners would have to take part.
+    grant = copy.deepcopy(examples["CreateShareRequest"])
+    grant["recipient"]["id"] = ben_id
+    assert client.post(f"/v1/notes/{note_id}/shares", auth=ada, json=grant).status_code == 201
+    bens = client.post(
+        f"/v1/notes/{note_id}/edit-requests",
+        auth=ben,
+        json={
+            "baseNoteETag": v4,
+            "proposedContent": {**awaiting["proposedContent"], "title": "Incident runbook (draft)"},
+        },
+    )
+    assert bens.status_code == 201 and bens.json()["requiredApprovals"] == 2
+
+    # 10. Cara removes herself (runbook-v5): one owner again, the stored policy persists, direct edits resume.
+    clock.advance(timedelta(minutes=60))
+    left = client.delete(f"/v1/notes/{note_id}/owners/{cara_id}", auth=cara, if_match=v4)
+    assert left.status_code == 200, left.text
+    assert left.json()["isOwner"] is False and left.json()["ownerIds"] == [ada_id]
+    after = client.get(f"/v1/notes/{note_id}", auth=ada)
+    assert after.json() == note_like(examples["NoteRunbookAfterOwnerLeft"], note_id, [ada_id], stamp(180))
+    assert client.get(f"/v1/edit-requests/{bens.json()['id']}", auth=ada).json()["requiredApprovals"] == 0
+    edited = client.patch(
+        f"/v1/notes/{note_id}",
+        auth=ada,
+        if_match=after.headers["ETag"],
+        json={"title": "Incident runbook (2026)"},
+    )
+    assert edited.status_code == 200
