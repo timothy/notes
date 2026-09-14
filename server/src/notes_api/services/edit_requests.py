@@ -432,3 +432,64 @@ def preview(rv: RequestView, final: Content | None) -> three_way.PreviewComputat
     require_final_content_allowed(rv, final)
     current = Content(rv.note.note.title, rv.note.note.body)
     return three_way.preview(base_of(rv.request), current, proposed_of(rv.request), final)
+
+
+# -- merge ----------------------------------------------------------------------------------------------
+
+STALE_NOTE_DETAIL = (
+    "The expectedNoteETag you supplied no longer matches the note. Preview the request again and merge with "
+    "the versions it reports."
+)
+
+
+def require_note_version(rv: RequestView, expected: str) -> None:
+    """``expectedNoteETag`` against the live note, after the request's own ``If-Match``; both are ``412``."""
+    if expected != rv.note.etag:
+        raise PreconditionFailed(detail=STALE_NOTE_DETAIL)
+
+
+def approval_count(rv: RequestView, merger: User) -> int:
+    """The stored approvals by current owners other than the proposer, plus one when the merger is neither
+    the proposer nor already among them: merging is itself an explicit approval."""
+    owners = set(rv.note.owner_ids)
+    proposer = rv.request.proposer_id
+    approvers = {row.user_id for row in rv.approvals if row.user_id in owners and row.user_id != proposer}
+    count = len(approvers)
+    if merger.id != proposer and merger.id not in approvers:
+        count += 1
+    return count
+
+
+def merge(
+    session: Session, *, rv: RequestView, merger: User, final: Content | None, now: datetime
+) -> RequestView:
+    """Merge an open request into its active note, for an owner whose two versions were already checked.
+
+    The ladder continues ``409 request_not_open``, ``409 note_not_active``, ``422 /finalContent`` under peer
+    approval, ``409 approval_required`` (the count per the design guide; ``0`` under ``self_merge``), then
+    the candidate: ``finalContent`` when given, otherwise the engine's clean three-way result, unresolved
+    conflicts being ``409 merge_conflict``. The write touches the note's title, body, folds, version, and
+    ``updated_at`` (tags and owners stay) and closes the request as ``merged`` with the merge record; the
+    note's version advances even when the candidate equals the live content. Any failure leaves both rows
+    as they were.
+    """
+    require_open_and_active(rv)
+    require_final_content_allowed(rv, final)
+    if approval_count(rv, merger) < rv.required_approvals():
+        raise Conflict("approval_required")
+    note = rv.note.note
+    current = Content(note.title, note.body)
+    computation = three_way.preview(base_of(rv.request), current, proposed_of(rv.request), final)
+    if not computation.can_merge or computation.candidate is None:
+        raise Conflict("merge_conflict")
+    candidate = computation.candidate
+    note.title, note.body = candidate.title, candidate.body
+    note.title_fold, note.body_fold = candidate.title.casefold(), candidate.body.casefold()
+    note.version = etags.new_version()
+    note.updated_at = now
+    request = rv.request
+    request.merged_title, request.merged_body = candidate.title, candidate.body
+    request.merged_note_version = note.version
+    request.merged_by = merger.id
+    request.merged_at = now
+    return _close(session, rv, MERGED, now)

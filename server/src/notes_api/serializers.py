@@ -172,6 +172,17 @@ def preview_result(rv: RequestView, computation: PreviewComputation) -> dict[str
     return {"requestETag": rv.etag, "currentNoteETag": rv.note.etag, **computation.to_dict()}
 
 
+def merge_result(rv: RequestView) -> dict[str, Any]:
+    """A ``MergeResult``: the updated note as the merger sees it, its new ETag, and the closed request. The
+    HTTP ``ETag`` header belongs to the request."""
+    view = rv.note
+    return {
+        "note": note(view.note, view.owner_ids, view.tags, view.access),
+        "noteETag": view.etag,
+        "editRequest": edit_request(rv),
+    }
+
+
 def _merge_record(request: EditRequest) -> dict[str, Any] | None:
     if request.merged_at is None:
         return None

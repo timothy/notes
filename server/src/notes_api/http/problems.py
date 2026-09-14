@@ -90,7 +90,8 @@ PROBLEMS: dict[str, ProblemType] = {
     "merge_conflict": ProblemType(
         409,
         "Merge conflict",
-        "The proposal conflicts with the current note. Preview the request and resolve the conflicts.",
+        "The proposal conflicts with the current note. Preview the request and resolve the conflicts, with "
+        "complete finalContent or, under peer approval, by revising the proposal.",
     ),
     "direct_edit_not_allowed": ProblemType(
         409,
