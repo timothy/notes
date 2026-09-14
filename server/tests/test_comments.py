@@ -14,7 +14,9 @@ from typing import Any
 
 import httpx
 import pytest
+from fastapi import FastAPI
 
+from notes_api import uow
 from tests.contract_client import ContractClient
 from tests.support import FakeClock, Persona
 from tests.test_notes import create, errors, me
@@ -206,3 +208,201 @@ def test_a_trashed_notes_comments_are_the_owners_to_read_and_nobodys_to_add(
     assert listed(client, ada, note_id).json()["items"] == [existing]  # comments survive the round trip
     assert listed(client, ben, note_id).status_code == 404  # the share did not
     assert comment(client, ada, note_id).status_code == 201
+
+
+# -- update and delete ----------------------------------------------------------------------------------
+
+UPDATED_BODY = "Please check the error rate and p95 latency after deployment."  # UpdateCommentRequest
+
+
+def edit(
+    client: ContractClient,
+    persona: Persona,
+    note_id: str,
+    comment_id: str,
+    etag: str | None,
+    body: str = UPDATED_BODY,
+    **kwargs: Any,
+) -> httpx.Response:
+    url = f"/v1/notes/{note_id}/comments/{comment_id}"
+    return client.patch(url, auth=persona, if_match=etag, json={"body": body}, **kwargs)
+
+
+def remove(
+    client: ContractClient, persona: Persona, note_id: str, comment_id: str, etag: str | None
+) -> httpx.Response:
+    return client.delete(f"/v1/notes/{note_id}/comments/{comment_id}", auth=persona, if_match=etag)
+
+
+def test_the_author_edits_with_the_comment_etag_and_an_identical_body_is_a_no_op(
+    client: ContractClient, clock: FakeClock, ada: Persona, ben: Persona
+) -> None:
+    note_id = shared_note(client, ada, ben, "comment")
+    created = comment(client, ben, note_id)
+    comment_id, first_etag = created.json()["id"], created.headers["ETag"]
+    clock.advance(timedelta(minutes=1))
+    edited = edit(client, ben, note_id, comment_id, first_etag)
+    assert edited.status_code == 200, edited.text
+    assert edited.json()["body"] == UPDATED_BODY and edited.json()["authorId"] == me(client, ben)
+    assert (
+        edited.json()["createdAt"] == START_TS and edited.json()["updatedAt"] == "2026-09-13T12:01:00.000000Z"
+    )
+    second_etag = edited.headers["ETag"]
+    assert ETAG.match(second_etag) and second_etag != first_etag
+    seen = client.get(f"/v1/notes/{note_id}/comments/{comment_id}", auth=ada)
+    assert seen.json() == edited.json() and seen.headers["ETag"] == second_etag
+    clock.advance(timedelta(minutes=1))
+    same = edit(client, ben, note_id, comment_id, second_etag)
+    assert same.status_code == 200 and same.json() == edited.json() and same.headers["ETag"] == second_etag
+    stale = edit(client, ben, note_id, comment_id, first_etag, body="stale")
+    assert stale.status_code == 412 and stale.json()["code"] == "precondition_failed"
+    assert client.get(f"/v1/notes/{note_id}/comments/{comment_id}", auth=ben).json() == edited.json()
+
+
+def test_owners_delete_any_comment_but_cannot_rewrite_someone_elses(
+    client: ContractClient, ada: Persona, ben: Persona
+) -> None:
+    note_id = shared_note(client, ada, ben, "comment")
+    created = comment(client, ben, note_id)
+    comment_id, etag = created.json()["id"], created.headers["ETag"]
+    refused = edit(client, ada, note_id, comment_id, etag)
+    assert refused.status_code == 403 and refused.json()["code"] == "forbidden"
+    assert client.get(f"/v1/notes/{note_id}/comments/{comment_id}", auth=ada).json() == created.json()
+    deleted = remove(client, ada, note_id, comment_id, etag)
+    assert deleted.status_code == 204 and deleted.content == b"" and "ETag" not in deleted.headers
+    assert client.get(f"/v1/notes/{note_id}/comments/{comment_id}", auth=ada).status_code == 404
+    assert edit(client, ben, note_id, comment_id, etag).status_code == 404
+    assert remove(client, ada, note_id, comment_id, etag).status_code == 404
+    assert listed(client, ada, note_id).json()["items"] == []
+    own = comment(client, ada, note_id)
+    assert edit(client, ada, note_id, own.json()["id"], own.headers["ETag"]).status_code == 200
+
+
+def test_an_author_who_lost_comment_permission_keeps_reading_only(
+    client: ContractClient, ada: Persona, ben: Persona
+) -> None:
+    note_id = create(client, ada).json()["id"]
+    share_id = share(client, ada, note_id, user(client, ben), "comment").json()["id"]
+    created = comment(client, ben, note_id)
+    comment_id, etag = created.json()["id"], created.headers["ETag"]
+    assert (
+        client.patch(
+            f"/v1/notes/{note_id}/shares/{share_id}", auth=ada, json={"permissions": ["read"]}
+        ).status_code
+        == 200
+    )
+    assert client.get(f"/v1/notes/{note_id}/comments/{comment_id}", auth=ben).status_code == 200
+    assert edit(client, ben, note_id, comment_id, etag).status_code == 403
+    assert remove(client, ben, note_id, comment_id, etag).status_code == 403
+    assert comment(client, ben, note_id).status_code == 403
+    assert (
+        client.patch(
+            f"/v1/notes/{note_id}/shares/{share_id}", auth=ada, json={"permissions": ["comment"]}
+        ).status_code
+        == 200
+    )
+    edited = edit(client, ben, note_id, comment_id, etag)
+    assert edited.status_code == 200
+    assert remove(client, ben, note_id, comment_id, edited.headers["ETag"]).status_code == 204
+
+
+def test_other_readers_can_neither_edit_nor_delete(
+    client: ContractClient, ada: Persona, ben: Persona, cara: Persona
+) -> None:
+    note_id = shared_note(client, ada, ben, "comment")
+    share(client, ada, note_id, user(client, cara), "comment", "propose_edit")
+    created = comment(client, ben, note_id)
+    comment_id, etag = created.json()["id"], created.headers["ETag"]
+    assert client.get(f"/v1/notes/{note_id}/comments/{comment_id}", auth=cara).status_code == 200
+    assert edit(client, cara, note_id, comment_id, etag).status_code == 403
+    assert remove(client, cara, note_id, comment_id, etag).status_code == 403
+    assert edit(client, cara, note_id, comment_id, None).status_code == 403  # 403 precedes 428
+    assert client.get(f"/v1/notes/{note_id}/comments/{comment_id}", auth=ben).json() == created.json()
+
+
+def test_comment_mutations_check_the_body_then_the_precondition(
+    client: ContractClient, ada: Persona, ben: Persona
+) -> None:
+    note_id = shared_note(client, ada, ben, "comment")
+    created = comment(client, ben, note_id)
+    comment_id, etag = created.json()["id"], created.headers["ETag"]
+    url = f"/v1/notes/{note_id}/comments/{comment_id}"
+    assert errors(client.patch(url, auth=ben, if_match=etag, json={})) == [("body", "/body")]
+    assert errors(client.patch(url, auth=ben, if_match=etag, json={"body": "x", "id": "y"})) == [
+        ("body", "/id")
+    ]
+    assert errors(client.patch(url, auth=ben, json={})) == [("body", "/body")]  # body shape before 428
+    assert (
+        client.patch(
+            url, auth=ben, if_match=etag, content="x", headers={"Content-Type": "text/plain"}
+        ).status_code
+        == 415
+    )
+    assert edit(client, ben, note_id, comment_id, None).status_code == 428
+    assert remove(client, ben, note_id, comment_id, None).status_code == 428
+    for bad in ('W/"x"', "*", '"a", "b"', "x"):
+        response = edit(client, ben, note_id, comment_id, bad)
+        assert response.status_code == 400 and errors(response) == [("header", "If-Match")]
+        assert remove(client, ben, note_id, comment_id, bad).status_code == 400
+    stale = '"0123456789abcdef0123456789abcdef"'
+    assert edit(client, ben, note_id, comment_id, stale).status_code == 412
+    assert remove(client, ben, note_id, comment_id, stale).status_code == 412
+    assert client.get(url, auth=ben).json() == created.json()
+    other = create(client, ada, title="other").json()["id"]
+    assert edit(client, ada, other, comment_id, None).status_code == 404  # mis-nested before 428
+    assert remove(client, ada, other, comment_id, etag).status_code == 404
+
+
+def test_comment_mutations_never_move_the_note_etag(
+    client: ContractClient, clock: FakeClock, ada: Persona, ben: Persona
+) -> None:
+    note_id = shared_note(client, ada, ben, "comment")
+    before = note_state(client, ada, note_id)
+    created = comment(client, ben, note_id)
+    comment_id = created.json()["id"]
+    clock.advance(timedelta(minutes=1))
+    edited = edit(client, ben, note_id, comment_id, created.headers["ETag"])
+    assert edited.status_code == 200
+    assert remove(client, ada, note_id, comment_id, edited.headers["ETag"]).status_code == 204
+    assert note_state(client, ada, note_id) == before
+
+
+@pytest.mark.acceptance("Trash")
+def test_a_trashed_note_freezes_its_comments(client: ContractClient, ada: Persona) -> None:
+    created = create(client, ada)
+    note_id = created.json()["id"]
+    own = comment(client, ada, note_id)
+    comment_id, etag = own.json()["id"], own.headers["ETag"]
+    trash_etag = client.delete(f"/v1/notes/{note_id}", auth=ada, if_match=created.headers["ETag"]).headers[
+        "ETag"
+    ]
+    frozen = edit(client, ada, note_id, comment_id, etag)
+    assert frozen.status_code == 409 and frozen.json()["code"] == "note_not_active"
+    assert remove(client, ada, note_id, comment_id, etag).status_code == 409
+    stale = edit(client, ada, note_id, comment_id, '"0123456789abcdef0123456789abcdef"')
+    assert stale.status_code == 412  # the version check still precedes the lifecycle check
+    assert client.get(f"/v1/notes/{note_id}/comments/{comment_id}", auth=ada).json() == own.json()
+    assert client.post(f"/v1/notes/{note_id}/restore", auth=ada, if_match=trash_etag).status_code == 200
+    edited = edit(client, ada, note_id, comment_id, etag)
+    assert edited.status_code == 200
+    assert remove(client, ada, note_id, comment_id, edited.headers["ETag"]).status_code == 204
+
+
+def test_a_competing_edit_committed_first_makes_the_second_stale(
+    client: ContractClient, app: FastAPI, ada: Persona, restore_hooks: None
+) -> None:
+    note_id = create(client, ada).json()["id"]
+    created = comment(client, ada, note_id)
+    comment_id, etag = created.json()["id"], created.headers["ETag"]
+    competitor = ContractClient(app)
+    fired: list[str] = []
+
+    def before_begin(op: str) -> None:
+        if op == "update_comment" and not fired:
+            fired.append(op)
+            assert edit(competitor, ada, note_id, comment_id, etag, body="First").status_code == 200
+
+    uow.hooks.before_begin = before_begin
+    second = edit(client, ada, note_id, comment_id, etag, body="Second")
+    assert second.status_code == 412 and fired == ["update_comment"]
+    assert client.get(f"/v1/notes/{note_id}/comments/{comment_id}", auth=ada).json()["body"] == "First"

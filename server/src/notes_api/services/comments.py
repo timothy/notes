@@ -2,10 +2,11 @@
 
 The router resolves the note first (``notes.read`` for reads, ``notes.lock(lock_access=True)`` for
 mutations), so everything here knows the caller may see the note. Anyone who can read the note reads its
-comments; adding one needs current ``comment`` permission (owners always have it). A comment must belong
-to the note in the path, and a mis-nested id is ``404`` before any ``403``: every reader may list the
-comments, so there is nothing to hide, and the author rule needs the row. Comments never touch the note's
-version or ``updated_at``.
+comments; adding one needs current ``comment`` permission (owners always have it); the author edits their
+own while they keep that permission; any owner, or the author with that permission, deletes. A comment
+must belong to the note in the path, and a mis-nested id is ``404`` before any ``403``: every reader may
+list the comments, so there is nothing to hide, and the author rule needs the row. Comments never touch
+the note's version or ``updated_at``.
 """
 
 from __future__ import annotations
@@ -17,7 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from notes_api import cursors, etags
-from notes_api.http.problems import Conflict, Forbidden, NotFound
+from notes_api.http.problems import Conflict, Forbidden, NotFound, PreconditionFailed
 from notes_api.models import Comment, User
 from notes_api.services import permissions
 from notes_api.services.notes import NoteView
@@ -73,3 +74,53 @@ def create_comment(session: Session, *, view: NoteView, author: User, body: str,
     session.add(comment)
     session.flush()
     return comment
+
+
+def for_edit(session: Session, *, view: NoteView, caller: User, comment_id: uuid.UUID) -> Comment:
+    """The comment a PATCH may touch: the caller's own, while they hold current ``comment`` permission.
+
+    Owners cannot rewrite someone else's comment, and an author who was downgraded to ``read`` keeps
+    reading it but not editing it.
+    """
+    comment = get_comment(session, view=view, comment_id=comment_id)
+    if comment.author_id != caller.id or not view.access.comment:
+        raise Forbidden()
+    return comment
+
+
+def for_delete(session: Session, *, view: NoteView, caller: User, comment_id: uuid.UUID) -> Comment:
+    """The comment a DELETE may remove: any owner deletes any comment; the author needs current
+    ``comment`` permission."""
+    comment = get_comment(session, view=view, comment_id=comment_id)
+    if not view.access.is_owner and not (comment.author_id == caller.id and view.access.comment):
+        raise Forbidden()
+    return comment
+
+
+def require_version(comment: Comment, if_match: str) -> None:
+    if if_match != etag(comment):
+        raise PreconditionFailed()
+
+
+def update_comment(
+    session: Session, *, view: NoteView, comment: Comment, body: str, now: datetime
+) -> Comment:
+    """Replace the body of a comment whose author and version were already checked.
+
+    A trashed note is ``409 note_not_active``. An identical body is a no-op that keeps the version and
+    ``updated_at``; an effective change takes a new version.
+    """
+    if permissions.is_trashed(view.note):
+        raise Conflict("note_not_active")
+    if body != comment.body:
+        comment.body, comment.version, comment.updated_at = body, etags.new_version(), now
+        session.flush()
+    return comment
+
+
+def delete_comment(session: Session, *, view: NoteView, comment: Comment) -> None:
+    """Remove a comment permanently; a trashed note is ``409 note_not_active``."""
+    if permissions.is_trashed(view.note):
+        raise Conflict("note_not_active")
+    session.delete(comment)
+    session.flush()
