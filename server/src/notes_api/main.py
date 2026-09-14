@@ -11,7 +11,7 @@ from fastapi import FastAPI
 
 from notes_api import CONTRACT_VERSION
 from notes_api.clock import Clock, SystemClock
-from notes_api.config import Settings
+from notes_api.config import Settings, load_settings
 from notes_api.contract import load_contract
 from notes_api.db import make_engine, make_session_factory
 from notes_api.http.health import install_health_routes
@@ -20,7 +20,7 @@ from notes_api.http.problems import install_problem_handlers
 
 
 def create_app(settings: Settings | None = None, clock: Clock | None = None) -> FastAPI:
-    settings = settings or Settings()
+    settings = settings or load_settings()
     app = FastAPI(
         title="Notes API", version=CONTRACT_VERSION, openapi_url=None, docs_url=None, redoc_url=None
     )

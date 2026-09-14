@@ -9,11 +9,10 @@ import pytest
 from fastapi import FastAPI, Response
 from fastapi.responses import JSONResponse
 
-from notes_api.config import Settings
 from notes_api.contract import Contract
 from notes_api.main import create_app
 from tests.contract_client import ContractClient, ContractViolation
-from tests.support import FakeClock, LocalIssuer
+from tests.support import FakeClock, LocalIssuer, settings_for
 
 START = datetime(2026, 9, 13, 12, 0, tzinfo=UTC)
 NOTE_ID = "44444444-4444-4444-8444-444444444444"
@@ -33,7 +32,7 @@ def example_body(contract: Contract, path: str, method: str, status: str) -> Any
 
 
 def stub_app(path: str, methods: list[str], endpoint: Callable[..., Any]) -> FastAPI:
-    app = create_app(Settings(database_url="sqlite://"))
+    app = create_app(settings_for("sqlite://"))
     app.add_api_route(path, endpoint, methods=methods)
     return app
 
@@ -119,7 +118,7 @@ def test_a_no_content_response_must_have_no_body() -> None:
 
 
 def test_unknown_routes_must_answer_with_the_404_problem() -> None:
-    client = ContractClient(create_app(Settings(database_url="sqlite://")))
+    client = ContractClient(create_app(settings_for("sqlite://")))
     assert client.get("/v1/nope").status_code == 404
     extra = ContractClient(stub_app("/v1/extra", ["GET"], lambda: {"ok": True}))
     with pytest.raises(ContractViolation, match="not in the contract"):
