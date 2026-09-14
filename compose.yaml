@@ -1,0 +1,70 @@
+# The local stack: PostgreSQL, the one-shot migration, then the API, all from one command.
+#   docker compose up --build --wait      then      curl -si http://127.0.0.1:8000/healthz
+# The api and migrate services run with the same hardening a production deployment should use.
+# Feature floor: Compose 2.24. NOTES_API_IMAGE overrides the image (the smoke test and CI set it);
+# NOTES_API_PORT and NOTES_API_DB_PORT move the published host ports when 8000 or 5432 are taken.
+name: notes-api
+
+x-hardened: &hardened
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  tmpfs: [/tmp]
+
+services:
+  db:
+    # Same major and Debian variant as the CI service container. Local credentials only.
+    image: postgres:17.11@sha256:67f41722b7a8cbdb868a44a4995c846eddfdc2973bccb291ce937dce88ad5675
+    environment:
+      POSTGRES_USER: notes
+      POSTGRES_PASSWORD: notes
+      POSTGRES_DB: notes
+    ports: ["127.0.0.1:${NOTES_API_DB_PORT:-5432}:5432"]
+    # PostgreSQL 17 data path; a move to 18 changes it to /var/lib/postgresql/18/docker.
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      # -h forces TCP: during initdb a socket-only server would otherwise report ready too early.
+      test: ["CMD-SHELL", "pg_isready -U notes -d notes -h 127.0.0.1"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  migrate:
+    <<: *hardened
+    image: ${NOTES_API_IMAGE:-notes-api:dev}
+    build: .
+    command: ["alembic", "-c", "/app/alembic.ini", "upgrade", "head"]
+    environment:
+      DATABASE_URL: postgresql+psycopg://notes:notes@db:5432/notes
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    <<: *hardened
+    image: ${NOTES_API_IMAGE:-notes-api:dev}
+    build: .
+    ports: ["127.0.0.1:${NOTES_API_PORT:-8000}:8000"]
+    environment:
+      DATABASE_URL: postgresql+psycopg://notes:notes@db:5432/notes
+    # OIDC_* and other optional settings; the file is gitignored and may be absent.
+    env_file:
+      - path: .env
+        required: false
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      # Readiness, from inside the container. The slim image has no curl; urlopen raises on any non-2xx.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/readyz', timeout=2)"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+volumes:
+  pgdata: {}
