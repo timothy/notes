@@ -16,6 +16,22 @@ Checklist for `tasks/plan.md` (approved 2026-09-13). Each task's full descriptio
 - [x] T1.3 Text-merge acceptance suite (S) — deps: T1.2. AC: every "Text merge" item named; deterministic; 5,000 lines under one second.
 - [x] Checkpoint B
 
+## PR C1: fail-fast configuration and probes (container-first, 2026-09-13)
+
+- [x] C1.1 Fail-fast configuration (S) — deps: none. AC: `Settings()` without `DATABASE_URL` raises naming `database_url`; Alembic reads `Settings`; suite green on SQLite and PostgreSQL.
+- [x] C1.2 Probe routes (M) — deps: C1.1. AC: `/healthz` 200; `/readyz` 200, or 503 without connection details; other methods and `/v1` variants are the 404 Problem; `ContractClient` rejects the probes as undeclared.
+- [x] Checkpoint C1
+
+## PR C2: container image, local stack, CI gate, docs
+
+- [x] C2.1 BuildKit prerequisite (S, docs) — deps: none. AC: `docker buildx version` works locally; both base-image digests reproduce; the step is in `server/README.md`.
+- [x] C2.2 Dockerfile and .dockerignore (M) — deps: C2.1, PR C1. AC: builds on arm64; uid 10001; refuses to start without `DATABASE_URL`; contract loads through `CONTRACT_PATH` on a read-only rootfs; `alembic heads` prints 0001; no uv or pytest in the image; hadolint clean; source label set.
+- [x] C2.3 compose.yaml (S) — deps: C2.2. AC: `up --wait` brings up db, migrate, api; probes answer; `.env` reaches the api; `stop -t 25 api` exits 0; a second `up` is a no-op migration.
+- [x] C2.4 Smoke script (M) — deps: C2.3. AC: `smoke OK` locally; a foreign image fails; shellcheck clean.
+- [x] C2.5 image.yml and server.yml alignment (M) — deps: C2.4. AC: `Container image` lint and build jobs green on the PR with `smoke OK`; `server.yml` green with `--locked` and `postgres:17.11`; contract workflows untouched.
+- [x] C2.6 Docs and plan bookkeeping (S) — deps: C2.5. AC: `server/README.md` Container section; root README rows and Running the server; CHANGELOG Unreleased line; plan amendments (architecture, defaults 3/4/8/16/20, 24-28, verification 7).
+- [x] Checkpoint C2: all four workflows green on the PR
+
 ## PR 2: slices 2 and 3
 
 - [ ] T2.1 JWT verification and 401 (M) — deps: T0.5.

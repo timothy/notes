@@ -12,27 +12,29 @@ Local tooling present: uv 0.11.7, Python 3.12.11 (matches CI) and 3.14.0, Docker
 
 ## Architecture decisions
 
-- **The contract is the only source of truth.** The server exposes exactly the 47 operations under `/v1` and nothing else (no `/health`, `openapi_url=None`); `openapi.yaml` changes only through the normal contract process, never to suit the server.
+- **The contract is the only source of truth.** The server exposes the 47 operations under `/v1`, plus two operational probes outside it (`/healthz` and `/readyz`, not in the contract, blocked at the ingress; amended 2026-09-13), and nothing else (`openapi_url=None`); `openapi.yaml` changes only through the normal contract process, never to suit the server.
 - **The spec validates requests at runtime.** Request bodies are validated against the spec's JSON Schemas (Draft 2020-12 through `referencing`, built exactly as the checker's `Contract` class does in `scripts/validate_contract.py:250-269`). This is the one refinement of the "generated Pydantic models" decision: datamodel-code-generator silently drops `if/then` (ReviewPolicy), `minProperties` (UpdateNote, ReviseEditRequest), the `PermissionSet` enum of arrays, and ordered `uniqueItems`, so a Pydantic validator would re-implement those rules by hand and drift. The generated models remain the typed layer that validated dicts are parsed into, with a drift check in CI.
 - **Responses are dicts from one serializer module**, validated in tests against the spec. Response shapes carry per-status `if/then` and `unevaluatedProperties: false`; dict-building is shorter and the test fixture proves conformance on every request.
 - **The acceptance table drives the test suite.** Each test is tagged with its section 6 row; an audit asserts all 17 rows are covered.
 - **One check ladder for every mutation** (below), grounded in design guide section 2 ("Authenticate first. Resolve access ... before returning content, lifecycle details, ETags, or conflict data") and section 4 ("an old ETag returns `412`; using the current ETag with an invalid transition returns `409`").
 - **Merge engine is a pure module built first.** No server or database dependency, byte-exact fixtures from the spec's examples, property tests.
 - **Whole schema in one migration.** The data model is fully specified by the contract; slices add code, not tables.
+- **The container image is the delivery unit** (added 2026-09-13). One digest-pinned, non-root, read-only image built from the repository root because it needs `openapi.yaml`; the same image runs `alembic upgrade head` as a separate step, never at process start. No shell entrypoint, no uv, tests, or dev dependencies at runtime. Tests stay uv-native in `server.yml`; `image.yml` proves the artifact.
+- **Fail fast on configuration** (added 2026-09-13). `Settings()` raises when `DATABASE_URL` is unset and Alembic reads the same `Settings`, so a misconfigured container refuses to boot instead of quietly running on SQLite. Liveness has no dependencies and readiness pings the database, so a database incident never restarts the fleet but does take dead replicas out of rotation.
 
 ## Defaults you can veto
 
 Runtime and layout
 1. Layout: `server/pyproject.toml`, `server/src/notes_api/` with `main.py`, `config.py`, `clock.py`, `db.py`, `models.py`, `uow.py`, `contract.py`, `etags.py`, `cursors.py`, `serializers.py`, `cli.py`, `generated/schemas.py` (never edited by hand), `http/` (problems, middleware, bodies, deps), `auth/`, `merge/`, `services/`, `routers/`; tests in `server/tests/` with `merge/`, `conformance/`, and one acceptance module per row.
 2. Sync SQLAlchemy 2.0 with plain `def` endpoints in FastAPI's threadpool. No async database layer.
-3. Configuration via pydantic-settings: `DATABASE_URL`, `OIDC_ISSUER`, `OIDC_AUDIENCE`, `OIDC_JWKS_URL` (or an inline JWKS for tests), `CONTRACT_PATH` (defaults to the repo's `openapi.yaml`).
-4. Liveness for deployments is an unauthenticated `GET /v1/me` returning the 401 Problem; no extra route.
+3. Configuration via pydantic-settings: `DATABASE_URL` (required, no default; SQLite is tests-only), `OIDC_ISSUER`, `OIDC_AUDIENCE`, `OIDC_JWKS_URL` (or an inline JWKS for tests), `CONTRACT_PATH` (defaults to the checkout's `openapi.yaml`; the image sets `/app/openapi.yaml`).
+4. Probes are `GET /healthz` (liveness, no dependencies) and `GET /readyz` (readiness, `SELECT 1`, `503` when the database is unreachable, no connection details in the body), outside `/v1` and outside the contract, blocked at the ingress. Superseded on 2026-09-13 the earlier "unauthenticated `GET /v1/me` returning the 401 Problem": Kubernetes `httpGet` probes fail on any status of 400 or above, so that signal could never serve as a probe.
 5. Delivery: six pull requests, one per group of slices (0-1, 2-3, 4-6, 7-9, 10-12, 13-14), each merged green before the next starts. `tasks/plan.md` and `tasks/todo.md` are committed in the first PR.
 
 Contract plumbing
 6. Bodies are read from the raw request, not declared as FastAPI parameters, so the order is `415` (not `application/json`), `400 malformed_request` (unparseable or empty when required), then `422 validation_failed` from the spec schema with `errors[]` (location `body`, RFC 6901 pointer; unknown fields reported per key with detail `unknown field`). Query, header, and path errors are `422` with the parameter name; a missing `If-Match` is `428`; a weak, list, or `*` value is `400` with a `header` error named `If-Match`. Body-less actions ignore `Content-Type`.
 7. `Cache-Control: no-store` on every response through pure-ASGI middleware, including framework 404s and the last-resort 500 (which leaks nothing). Problem `type` is literally `https://notes-api.example.com/problems/{code}`. `Location` values are hand-built `/v1/...` paths.
-8. An unknown route or an undeclared method on a known path is `404 not_found`, so the server never emits a status the contract does not declare.
+8. An unknown route or an undeclared method on a known path is `404 not_found`, so the server never emits a status the contract does not declare. The two probe paths (default 4) are the only routes outside the contract.
 
 Data
 9. IDs are uuid4 (SQLAlchemy `Uuid`: CHAR(32) on SQLite, `uuid` on PostgreSQL). Timestamps go through a `UTCDateTime` type that accepts only aware UTC, stores microseconds on both backends, and renders `YYYY-MM-DDTHH:MM:SS.ffffffZ`.
@@ -42,7 +44,7 @@ Data
 13. Tags live in a `note_tags` table with a position column so order is retained; the `tag` filter is one `EXISTS` per value.
 14. Diffs are computed on read from stored base and proposed text, never stored.
 15. Trash expiry is enforced at read time (`now >= expires_at` is `404`). Physical purge is `uv run notes-api purge-expired` for an external scheduler.
-16. SQLite is configured for real write serialization: `isolation_level=None`, `BEGIN IMMEDIATE` emitted on every transaction begin, WAL, `busy_timeout=5000`, `foreign_keys=ON`. Tests use a file database in `tmp_path`, never `:memory:`, so multiple connections work.
+16. SQLite is configured for real write serialization: `isolation_level=None`, `BEGIN IMMEDIATE` emitted on every transaction begin, WAL, `busy_timeout=5000`, `foreign_keys=ON`. Tests use a file database in `tmp_path`, never `:memory:`, so multiple connections work. SQLite is tests-only: there is no default `DATABASE_URL`, and containers run PostgreSQL, whose engine gets a five-second `connect_timeout`.
 
 Auth
 17. PyJWT with `PyJWKClient` (or inline JWKS), algorithms `RS256` and `ES256`, verifying signature, `iss`, `aud`, `exp`, `nbf`. `(iss, sub)` maps to one local user; provisioning is a `SAVEPOINT` insert with `IntegrityError` re-select, so concurrent first access cannot duplicate. `displayName` comes from `name`, else `preferred_username`, else `user-` plus the first 8 characters of `sub`, truncated to 200 code points. The 401 challenge is `Bearer realm="notes-api"`, adding `error="invalid_token"` when a token was present. Opaque tokens and introspection are deferred.
@@ -50,10 +52,17 @@ Auth
 Testing and CI
 18. The unit-of-work wrapper `transaction(session, op)` calls `hooks.before_begin(op)` (a no-op in production) before `BEGIN`. Race tests run a competitor inside that hook in its own session, which proves every check lives inside the transaction, deterministically on SQLite. Thread-and-barrier tests assert the outcome set (`{200, 412}`) and run unchanged on PostgreSQL.
 19. A `ContractClient` test wrapper maps each response back to its path template and fails the test on an undeclared status, a body that violates the `$ref` schema, a missing or malformed required header, or a wrong media type. Schemathesis runs from slice 4 on an include list of implemented operation ids that grows per slice; slice 13 removes the filter.
-20. `.github/workflows/server.yml`: `uv sync --frozen`, ruff, `mypy --strict`, pytest on SQLite, pytest on a PostgreSQL 17 service container, and the model drift check, on every push to `main` and every pull request.
+20. `.github/workflows/server.yml`: `uv sync --locked` (fails on lockfile drift instead of installing the stale lock), ruff, `mypy --strict`, pytest on SQLite, pytest on a PostgreSQL 17.11 service container, and the model drift check, on every push to `main` and every pull request. `.github/workflows/image.yml` on the same triggers: hadolint, a linux/amd64 build with the GitHub Actions layer cache, a Trivy gate on fixable CRITICAL and HIGH findings, and `server/scripts/smoke_image.sh` through `compose.yaml`.
 21. Merge engine: lines split on `\n` only with ends kept (never `str.splitlines`, which also splits on `\x0b` and ` `), `SequenceMatcher(autojunk=False)` for both diff pairs, a custom unified formatter (difflib gets hunk headers right but cannot emit `\ No newline at end of file`), three-way walk of stable and unstable chunks with conflicts in one-based half-open base coordinates, title as one line with a virtual newline. No GPL dependencies.
 22. Observability: structured JSON request logs with request id, route template, status, and Problem `code`; no metrics or tracing in this plan.
 23. The server has no version of its own; `pyproject.toml` records the contract version it implements (2.0.0), and its arrival is a repository line under Unreleased in `CHANGELOG.md`.
+
+Container (added 2026-09-13; the full rationale is in the container-first plan)
+24. `Dockerfile` and an allow-list `.dockerignore` at the repository root; builder and runtime are both `python:3.12.14-slim-trixie` pinned by digest (the venv records the interpreter path, so the stages must match), uv 0.11.7 pinned by digest through a named `FROM` stage so Dependabot can see it. Two `uv sync --locked` steps (dependencies from the lockfile alone, then the project non-editable) with `UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy UV_PYTHON_DOWNLOADS=0 UV_NO_DEV=1`. The runtime stage runs `apt-get upgrade` once to apply the Debian security updates published after the pinned base was built (the first Trivy run caught 12 fixable CVEs in the 2026-09-02 build while Docker Hub had not rebuilt the tag); it installs nothing else. No alpine, distroless, uv-managed interpreter, `HEALTHCHECK`, `ENTRYPOINT`, tini, or `uv run`.
+25. Runtime: uid and gid 10001 (numeric `USER`), `/app/.venv`, `/app/openapi.yaml`, `/app/alembic.ini`, `/app/alembic/` root-owned and read-only; `ENV PATH=/app/.venv/bin:$PATH PYTHONUNBUFFERED=1 PYTHONFAULTHANDLER=1 CONTRACT_PATH=/app/openapi.yaml`; exec-form `CMD uvicorn --factory notes_api.main:create_app --host 0.0.0.0 --port 8000 --timeout-graceful-shutdown 20`; one worker per container, scaled with replicas; proxy headers trusted from loopback only unless `FORWARDED_ALLOW_IPS` names the ingress; OCI `source` and `licenses` labels.
+26. `compose.yaml`: `db` (`postgres:17.11` by digest, `pg_isready` over TCP), `migrate` (one-shot `alembic -c /app/alembic.ini upgrade head`, `restart: "no"`), `api` (`depends_on` the healthy database and the completed migration; readiness healthcheck through the image's Python). `api` and `migrate` run `read_only` with `cap_drop: [ALL]`, `no-new-privileges`, and a tmpfs `/tmp`. Ports bind to `127.0.0.1` and move with `NOTES_API_PORT` and `NOTES_API_DB_PORT`; `NOTES_API_IMAGE` selects the image; an optional gitignored `.env` carries `OIDC_*`. No override file, watch mode, profiles, toolchain services, or devcontainer.
+27. `server/scripts/smoke_image.sh` is the executable container contract (fail-fast boot, uid, capabilities, PID 1, read-only rootfs, no uv or test tooling, probe and 404 behaviour, readiness following the database, schema at head, clean SIGTERM, labels), run identically on a developer machine and in `image.yml`.
+28. Not published to a registry yet. When it is: `ghcr.io`, tags `main` and `sha-<commit>`, provenance and SBOM attestations from `docker/build-push-action`, a manual visibility flip; multi-arch only when an arm64 consumer exists. Dependabot covers the `docker` and `docker-compose` ecosystems weekly, holding uv on 0.11.x, Python on 3.12, and PostgreSQL on 17.
 
 ## Data model
 
@@ -139,7 +148,7 @@ Verify: `tests/merge/test_acceptance.py` tagged `acceptance("Text merge")`. Deps
 ### Slice 2: auth, /me, /users (PR 2 with slice 3)
 
 **T2.1 JWT verification and 401 (M).** `auth/jwt.py` with `PyJWKClient` or inline JWKS, algorithm allowlist, `iss`/`aud`/`exp`/`nbf` checks, rejection of a `typ` that is neither `at+jwt` nor `JWT`, `Identity(issuer, subject, display_name)`; `http/deps.py::current_user` raising the 401 Problem with the challenge.
-AC: missing, expired, wrong-audience, wrong-issuer, and unsigned tokens are `401` with `WWW-Authenticate`; a valid token passes; a JWKS fetch failure is `401`, not `500`.
+AC: missing, expired, wrong-audience, wrong-issuer, and unsigned tokens are `401` with `WWW-Authenticate`; a valid token passes; a JWKS fetch failure is `401`, not `500`; `docker compose up --wait` still boots the api, with any newly required `OIDC_*` setting documented as a `.env` key in `server/README.md`.
 Verify: `tests/test_auth.py`. Deps: T0.5. Files: `auth/jwt.py`, `http/deps.py`, `config.py`.
 
 **T2.2 Provisioning and GET /me (S).** `auth/provisioning.py::get_or_create_user` (select, `SAVEPOINT` insert, `IntegrityError`, re-select); router for `/v1/me`; `main.py` app factory wiring.
@@ -332,6 +341,7 @@ Verify: follow the README on a clean checkout. Deps: T13.2. Files: `server/READM
 4. The three section 5 flows (create and share; submit, preview, merge; protect and merge with peer approval) run as end-to-end tests using the spec's example payloads, and the acceptance audit shows all 17 rows covered.
 5. `server/scripts/gen_models.sh --check` proves the committed models match the contract.
 6. The contract checks in `.github/workflows/contract.yml` still pass, proving `openapi.yaml` was not bent to fit the server.
+7. `docker build -t notes-api:dev . && NOTES_API_IMAGE=notes-api:dev server/scripts/smoke_image.sh` prints `smoke OK`, and the `Container image` workflow is green on the pull request.
 
 ## Open questions
 

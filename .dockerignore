@@ -1,0 +1,13 @@
+# Allow-list: the build context holds only what the Dockerfile COPYs or bind-mounts, so .git, the local
+# virtualenvs, caches, tests, and docs never reach the daemon and cannot invalidate a layer.
+# Add a `!path` line whenever the Dockerfile gains a COPY.
+*
+!openapi.yaml
+!server/pyproject.toml
+!server/uv.lock
+!server/README.md
+!server/src
+!server/alembic
+!server/alembic.ini
+**/__pycache__
+**/*.py[cod]

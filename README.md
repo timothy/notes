@@ -1,6 +1,6 @@
 # Notes API
 
-A contract-first REST backend for a note-taking service shared among several small teams. This repository holds the contract, not a running server: an OpenAPI 3.1.2 document, the normative design guide behind it, and a checker that keeps the two honest.
+A contract-first REST backend for a note-taking service shared among several small teams. This repository holds the contract and its reference server: an OpenAPI 3.1.2 document, the normative design guide behind it, a checker that keeps the two honest, and under `server/` a FastAPI implementation in progress that ships as a container image.
 
 ## Why nobody gets write access to someone else's notes
 
@@ -55,6 +55,13 @@ These are the price of the guarantee above.
 | `LICENSE` | Apache License 2.0. |
 | `.github/workflows/contract.yml` | GitHub Actions workflow that runs the checker and the Redocly lint on every push to `main` and every pull request, and fails pull requests on client-breaking changes found by oasdiff. |
 | `.github/workflows/docs.yml` | GitHub Actions workflow that builds the API reference with Redocly on every pull request and publishes it to GitHub Pages from `main`. |
+| `server/` | The reference server: a uv project (FastAPI, SQLAlchemy, Alembic) whose plan and task list are in `tasks/`. See [server/README.md](server/README.md). |
+| `Dockerfile`, `.dockerignore` | The production image: non-root, read-only, one uvicorn process. The build context is the repository root because the server needs `openapi.yaml`. |
+| `compose.yaml` | The local stack: PostgreSQL 17, the one-shot migration, then the API, with the hardening a deployment should use. |
+| `server/scripts/smoke_image.sh` | Proves the container contract against a built image, locally and in CI. |
+| `.github/workflows/server.yml` | GitHub Actions workflow that runs ruff, mypy, and the test suite on SQLite and on PostgreSQL. |
+| `.github/workflows/image.yml` | GitHub Actions workflow that lints the Dockerfile, builds the image, scans it for fixable vulnerabilities, and runs the smoke test on every push to `main` and every pull request. |
+| `.github/dependabot.yml` | Weekly updates for the digest-pinned base images in `Dockerfile` and `compose.yaml`. |
 
 ## Running the checks
 
@@ -87,6 +94,18 @@ npx --yes @stoplight/prism-cli@5.16.0 mock openapi.yaml --errors
 - Each response is the operation's first example. `Prefer: example=merged` selects a named example and `Prefer: code=412` selects another documented status.
 - With `--errors`, an invalid body, a missing `If-Match`, or an unsupported content type is answered with the operation's `422` or `415` example instead of a logged warning. Prism reports every request-validation failure as `422`, even where the contract says `428`.
 - The mock has no state. Creating a note returns the fixed example, and generated header values such as `Location` are placeholders.
+
+## Running the server
+
+With Docker installed and nothing else:
+
+```sh
+docker compose up --build --wait
+curl -si http://127.0.0.1:8000/healthz
+docker compose down -v
+```
+
+The first command builds the image, starts PostgreSQL, applies the schema, and starts the API on `127.0.0.1:8000`. Only the contract's routes under `/v1` and the two probes `/healthz` and `/readyz` exist; the server is a work in progress, so contract routes answer `404` until their slices land. [server/README.md](server/README.md) covers configuration, migrations, probes, deployment constraints, and running the test suite against PostgreSQL.
 
 ## Releases and versioning
 

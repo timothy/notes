@@ -1,0 +1,60 @@
+# Lints, builds, scans, and smoke-tests the server's container image on every push to main and every pull
+# request. The image is not published anywhere yet. Tests stay in server.yml; this workflow proves the
+# artifact: it builds from the repository root, starts against PostgreSQL through compose.yaml, and
+# satisfies server/scripts/smoke_image.sh. Contract checks live in contract.yml and are never touched here.
+name: Container image
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  lint:
+    name: hadolint and compose config
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: hadolint/hadolint-action@v3.5.0
+        with:
+          dockerfile: Dockerfile
+          failure-threshold: warning
+      - run: docker compose config -q
+
+  build:
+    name: build, scan, smoke (linux/amd64)
+    needs: lint
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: notes-api:ci
+          cache-from: type=gha,scope=linux-amd64
+          cache-to: type=gha,mode=max,scope=linux-amd64
+      - name: Scan for fixable CRITICAL and HIGH vulnerabilities
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: image
+          image-ref: notes-api:ci
+          format: table
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+        env:
+          TRIVY_DB_REPOSITORY: public.ecr.aws/aquasecurity/trivy-db:2,ghcr.io/aquasecurity/trivy-db:2
+      - name: Smoke-test the image through compose.yaml
+        run: NOTES_API_IMAGE=notes-api:ci server/scripts/smoke_image.sh
