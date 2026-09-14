@@ -41,13 +41,13 @@ Checklist for `tasks/plan.md` (approved 2026-09-13). Each task's full descriptio
 - [x] T2.4 Provisioning and GET /me (M) — deps: T2.3. AC: `GET /me` twice returns one id; four personas get four ids; a competitor inserting the identity in `before_begin("provision_user")` is reused; eight threads produce one row; the display name is never refreshed.
 - [x] T2.5 Cursors, pagination, GET /users and /users/{userId} (M) — deps: T2.4. AC: `limit=0`, `101`, `abc` are `422 query/limit`; a cursor reused with another limit, by another caller, or tampered is `400 invalid_cursor`; ties page by id; `/users/{userId}` is `404` or `422 path/userId`.
 - [x] T2.6 Compose, smoke, docs, bookkeeping (M) — deps: T2.5. AC: `smoke OK` with the fail-fast split and the authenticated `GET /v1/me`; `docker compose config -q` passes with no `.env`; READMEs, CHANGELOG, and the plan are current.
-- [ ] Checkpoint C: all four workflows green on the PR
+- [x] Checkpoint C: all four workflows green on PR #12 (2026-09-14)
 
 ## PR 2b: slice 3 (teams and memberships)
 
-- [ ] T3.1 Teams CRUD (M) — deps: T2.5.
-- [ ] T3.2 Memberships with last-admin atomicity (M) — deps: T3.1.
-- [ ] Checkpoint D: "Directory and teams" row complete
+- [x] T3.1 Teams CRUD (M) — deps: T2.5. AC: creator is admin; `scope=mine`; non-admins `403` on PATCH and DELETE; body errors after authorization; unchanged rename is a no-op; deletion removes memberships and team shares while notes, comments, and edit requests stay.
+- [x] T3.2 Memberships with last-admin atomicity (M) — deps: T3.1. AC: nonmember listing `403`; default role `member`; unknown user `422 /userId`; duplicate `409`; last admin cannot be demoted or leave; `403` before the target's `404`; hook and thread races leave exactly one admin.
+- [x] Checkpoint D: "Directory and teams" row complete; all four workflows green on PR #13 (2026-09-14)
 
 ## PR 3: slices 4, 5, and 6
 
