@@ -211,9 +211,15 @@ def install_problem_handlers(app: FastAPI) -> None:
     app.add_exception_handler(Exception, _unexpected_handler)
 
 
+def respond(request: Request, problem: Problem) -> Response:
+    """Render a Problem and record its code for the request log."""
+    request.state.problem_code = problem.code
+    return problem.response()
+
+
 async def _problem_handler(request: Request, exc: Exception) -> Response:
     assert isinstance(exc, Problem)
-    return exc.response()
+    return respond(request, exc)
 
 
 async def _request_validation_handler(request: Request, exc: Exception) -> Response:
@@ -223,20 +229,20 @@ async def _request_validation_handler(request: Request, exc: Exception) -> Respo
     for error in exc.errors():
         loc = tuple(error.get("loc", ()))
         if error.get("type") == "json_invalid":
-            return MalformedRequest().response()
+            return respond(request, MalformedRequest())
         location = str(loc[0]) if loc else "body"
         pointer = json_pointer(loc[1:]) if location == "body" else (str(loc[1]) if len(loc) > 1 else "")
         errors.append(FieldError(location, pointer, str(error.get("msg", "is invalid"))))
-    return ValidationFailed(errors, detail="A query, header, or path parameter is invalid.").response()
+    return respond(request, ValidationFailed(errors, detail="A query, header, or path parameter is invalid."))
 
 
 async def _http_exception_handler(request: Request, exc: Exception) -> Response:
     """Starlette's routing errors: an unknown route or an undeclared method is the contract's 404."""
     assert isinstance(exc, StarletteHTTPException)
     if exc.status_code in (404, 405):
-        return NotFound().response()
+        return respond(request, NotFound())
     if 400 <= exc.status_code < 500:
-        return MalformedRequest(detail=str(exc.detail)).response()
+        return respond(request, MalformedRequest(detail=str(exc.detail)))
     return _internal_error()
 
 

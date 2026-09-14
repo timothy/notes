@@ -51,7 +51,9 @@ def bearer_identity(request: Request) -> Identity:
 def current_user(request: Request) -> User:
     """The local user behind the bearer token, provisioned on first contact."""
     identity = bearer_identity(request)
-    return get_or_create_user(request.app.state.session_factory, identity, request.app.state.clock)
+    user = get_or_create_user(request.app.state.session_factory, identity, request.app.state.clock)
+    request.state.user_id = str(user.id)  # for the request log; never the subject or the token
+    return user
 
 
 CurrentUser = Annotated[User, Depends(current_user)]
