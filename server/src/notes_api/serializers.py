@@ -14,7 +14,7 @@ from typing import Any
 from fastapi.responses import JSONResponse
 
 from notes_api import etags
-from notes_api.merge.three_way import Content, proposal_diff
+from notes_api.merge.three_way import Content, PreviewComputation, proposal_diff
 from notes_api.models import Approval, Comment, EditRequest, Membership, Note, Share, Team, User
 from notes_api.services.edit_requests import RequestView
 from notes_api.services.permissions import Access
@@ -164,6 +164,22 @@ def edit_request(rv: RequestView) -> dict[str, Any]:
         "rejectedBy": str(request.rejected_by) if request.rejected_by is not None else None,
         "rejectionReason": request.rejection_reason,
         "mergeRecord": _merge_record(request),
+    }
+
+
+def preview_result(rv: RequestView, computation: PreviewComputation) -> dict[str, Any]:
+    """A ``PreviewResult``: the two versions the pair came from, then the engine's computation."""
+    return {"requestETag": rv.etag, "currentNoteETag": rv.note.etag, **computation.to_dict()}
+
+
+def merge_result(rv: RequestView) -> dict[str, Any]:
+    """A ``MergeResult``: the updated note as the merger sees it, its new ETag, and the closed request. The
+    HTTP ``ETag`` header belongs to the request."""
+    view = rv.note
+    return {
+        "note": note(view.note, view.owner_ids, view.tags, view.access),
+        "noteETag": view.etag,
+        "editRequest": edit_request(rv),
     }
 
 

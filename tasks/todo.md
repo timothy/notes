@@ -92,11 +92,11 @@ Checklist for `tasks/plan.md` (approved 2026-09-13). Each task's full descriptio
 
 ## PR 4c: slice 9 (preview and merge)
 
-- [ ] T9.1 POST /edit-requests/{requestId}/preview (M) — deps: T8.4, T1.3.
-- [ ] T9.2 POST /edit-requests/{requestId}/merge (M) — deps: T9.1.
-- [ ] T9.3 Review race tests (M) — deps: T9.2.
-- [ ] T9.4 Docs, the "Preview and merge" flow, and bookkeeping (S) — deps: T9.3.
-- [ ] Checkpoint J: section 5 "Submit" and "Preview and merge" end to end
+- [x] T9.1 POST /edit-requests/{requestId}/preview (M) — deps: T8.4, T1.3. AC: `PreviewClean`, `PreviewWithFinalContent`, `PreviewConflict`, and `PreviewConflictResolved` are reproduced byte for byte from the same texts; two previews change no version or `updatedAt`; a note change between previews moves `currentNoteETag` and the comparison; only owners preview (proposer `403`, readers `404`); closed `409 request_not_open` before trashed `409 note_not_active`; the body is optional and validated; `finalContent` under `peer_approval` on a protected note is the contract's `422`, even when it equals the automatic candidate, while `self_merge` and single-owner notes accept it.
+- [x] T9.2 POST /edit-requests/{requestId}/merge (M) — deps: T9.1. AC: the clean candidate updates the note and closes the request with `mergeRecord`, preserving `proposedContent`, `proposalDiff`, tags, and owners; `finalContent` lands in the note and the record, never the proposal; a candidate equal to the live content still advances the note; every failing check (401, 404, 403, 428, 400, 412 for either version with its own detail, 422, 409 `merge_conflict` with the contract's detail, trashed, closed) leaves both rows byte-identical; a repeat with the old ETag is `412`; peer approval counts stored approvals by current owners other than the proposer plus a non-proposing merger, `409 approval_required` writes nothing, and closing freezes `approvals` and `requiredApprovals`.
+- [x] T9.3 Review race tests (M) — deps: T9.2. AC: two merges on one note cannot overwrite each other and the loser re-previews and merges cleanly; a revision, withdrawal, or rejection committed first makes the merge `412` (then `409 request_not_open`); a share downgraded before a revision commits blocks it; a note edit or revision after a preview makes the merge `412`; concurrent merges of two requests and a merge racing a revision permit exactly one winner.
+- [x] T9.4 Docs, the "Preview and merge" flow, and bookkeeping (S) — deps: T9.3.
+- [x] Checkpoint J: all four workflows green on PR #19 (2026-09-14); the section 5 "Submit and discover" and "Preview and merge" flows pass end to end
 
 ## PR 5: slices 10, 11, and 12
 

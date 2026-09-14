@@ -30,6 +30,8 @@ def install_edit_request_routes(app: FastAPI) -> None:
     add_route(app, "PATCH", "/edit-requests/{requestId}", revise_edit_request)
     add_route(app, "POST", "/edit-requests/{requestId}/withdraw", withdraw_edit_request)
     add_route(app, "POST", "/edit-requests/{requestId}/reject", reject_edit_request)
+    add_route(app, "POST", "/edit-requests/{requestId}/preview", preview_edit_request)
+    add_route(app, "POST", "/edit-requests/{requestId}/merge", merge_edit_request)
 
 
 def list_note_edit_requests(
@@ -151,4 +153,43 @@ def reject_edit_request(user: CurrentUser, request: Request, requestId: uuid.UUI
         edit_requests.require_version(rv, parse_if_match(request.headers.get("if-match")))
         rv = edit_requests.reject(session, rv=rv, rejecter=user, reason=body.get("reason"), now=now)
         payload, etag = serializers.edit_request(rv), rv.etag
+    return serializers.json_response(payload, headers={"ETag": etag})
+
+
+def preview_edit_request(user: CurrentUser, request: Request, requestId: uuid.UUID) -> JSONResponse:
+    """Owners only, no locks, no writes: the body is optional and an empty one counts as omitted."""
+    body = parse_body(request, "PreviewEditRequest", required=False)
+    with sessions(request)() as session, uow.transaction(session, "preview_edit_request"):
+        rv = edit_requests.inspect(
+            session, caller=user, request_id=requestId, now=clock(request).now(), lock=False
+        )
+        notes.require_owner(rv.note)
+        final = body.get("finalContent")
+        computation = edit_requests.preview(
+            rv, Content(final["title"], final["body"]) if final is not None else None
+        )
+        payload = serializers.preview_result(rv, computation)
+    return serializers.json_response(payload)
+
+
+def merge_edit_request(user: CurrentUser, request: Request, requestId: uuid.UUID) -> JSONResponse:
+    """Body shape, then the request under the note lock (404), owner (403), the request's If-Match
+    (428/400/412), expectedNoteETag (412), 409 request_not_open, 409 note_not_active, 422 /finalContent,
+    409 approval_required, 409 merge_conflict, then the atomic write. The response ETag is the request's."""
+    body = parse_body(request, "MergeEditRequest")
+    now = clock(request).now()
+    with sessions(request)() as session, uow.transaction(session, "merge_edit_request"):
+        rv = edit_requests.inspect(session, caller=user, request_id=requestId, now=now, lock=True)
+        notes.require_owner(rv.note)
+        edit_requests.require_version(rv, parse_if_match(request.headers.get("if-match")))
+        edit_requests.require_note_version(rv, body["expectedNoteETag"])
+        final = body.get("finalContent")
+        rv = edit_requests.merge(
+            session,
+            rv=rv,
+            merger=user,
+            final=Content(final["title"], final["body"]) if final is not None else None,
+            now=now,
+        )
+        payload, etag = serializers.merge_result(rv), rv.etag
     return serializers.json_response(payload, headers={"ETag": etag})
