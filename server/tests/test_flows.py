@@ -5,21 +5,9 @@ from __future__ import annotations
 import copy
 from typing import Any
 
-import pytest
-
-from notes_api.contract import Contract
 from tests.contract_client import ContractClient
 from tests.support import Persona
 from tests.test_notes import me
-
-
-@pytest.fixture(scope="module")
-def examples() -> dict[str, Any]:
-    document = Contract.load().document
-    values: dict[str, Any] = {
-        name: example["value"] for name, example in document["components"]["examples"].items()
-    }
-    return values
 
 
 def test_create_and_share(

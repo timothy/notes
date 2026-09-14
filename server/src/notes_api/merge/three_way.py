@@ -133,20 +133,25 @@ def merge_body(base: str, current: str, proposed: str) -> tuple[str | None, list
     return join_lines(merged), []
 
 
-def preview(
-    base: Content, current: Content, proposed: Content, final: Content | None = None
-) -> PreviewComputation:
-    proposal_diff = FieldDiff(
+def proposal_diff(base: Content, proposed: Content) -> FieldDiff:
+    """Base to proposed, labelled ``base/title``, ``proposed/title``, ``base/body``, ``proposed/body``."""
+    return FieldDiff(
         title=title_diff(base.title, proposed.title, "base/title", "proposed/title"),
         body=field_diff(base.body, proposed.body, "base/body", "proposed/body"),
     )
+
+
+def preview(
+    base: Content, current: Content, proposed: Content, final: Content | None = None
+) -> PreviewComputation:
+    diff = proposal_diff(base, proposed)
     merged_title, title_conflict = merge_title(base.title, current.title, proposed.title)
     merged_body, body_conflicts = merge_body(base.body, current.body, proposed.body)
     conflicts = ([title_conflict] if title_conflict is not None else []) + body_conflicts
     if final is not None:
         candidate, used_final = final, True
     elif conflicts:
-        return PreviewComputation(False, False, None, conflicts, proposal_diff, None)
+        return PreviewComputation(False, False, None, conflicts, diff, None)
     else:
         assert merged_title is not None and merged_body is not None
         candidate, used_final = Content(merged_title, merged_body), False
@@ -154,7 +159,7 @@ def preview(
         title=title_diff(current.title, candidate.title, "current/title", "candidate/title"),
         body=field_diff(current.body, candidate.body, "current/body", "candidate/body"),
     )
-    return PreviewComputation(True, used_final, candidate, conflicts, proposal_diff, merge_diff)
+    return PreviewComputation(True, used_final, candidate, conflicts, diff, merge_diff)
 
 
 def _unstable_regions(current_ops: Sequence[Opcode], proposed_ops: Sequence[Opcode]) -> list[tuple[int, int]]:

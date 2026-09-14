@@ -13,7 +13,10 @@ from typing import Any
 
 from fastapi.responses import JSONResponse
 
-from notes_api.models import Comment, Membership, Note, Share, Team, User
+from notes_api import etags
+from notes_api.merge.three_way import Content, proposal_diff
+from notes_api.models import Approval, Comment, EditRequest, Membership, Note, Share, Team, User
+from notes_api.services.edit_requests import RequestView
 from notes_api.services.permissions import Access
 
 TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%S.%fZ"
@@ -117,4 +120,61 @@ def comment(row: Comment) -> dict[str, Any]:
         "body": row.body,
         "createdAt": timestamp(row.created_at),
         "updatedAt": timestamp(row.updated_at),
+    }
+
+
+def approval(row: Approval) -> dict[str, Any]:
+    return {"userId": str(row.user_id), "approvedAt": timestamp(row.approved_at)}
+
+
+def _edit_request_fields(rv: RequestView) -> dict[str, Any]:
+    """``EditRequestFields``: ``noteTitle`` and an open request's ``requiredApprovals`` are live views of the
+    note, outside the request's ETag."""
+    request = rv.request
+    return {
+        "id": str(request.id),
+        "noteId": str(request.note_id),
+        "noteTitle": rv.note.note.title,
+        "proposerId": str(request.proposer_id),
+        "status": request.status,
+        "requiredApprovals": rv.required_approvals(),
+        "approvals": [approval(row) for row in rv.approvals],
+        "createdAt": timestamp(request.created_at),
+        "updatedAt": timestamp(request.updated_at),
+        "closedAt": timestamp(request.closed_at) if request.closed_at is not None else None,
+    }
+
+
+def edit_request_summary(rv: RequestView) -> dict[str, Any]:
+    """An inbox entry: the shared fields without content or diffs."""
+    return _edit_request_fields(rv)
+
+
+def edit_request(rv: RequestView) -> dict[str, Any]:
+    """The full ``EditRequest``; every key is present so the per-status ``if/then`` rules can hold."""
+    request = rv.request
+    base = Content(request.base_title, request.base_body)
+    proposed = Content(request.proposed_title, request.proposed_body)
+    return {
+        **_edit_request_fields(rv),
+        "baseContent": base.to_dict(),
+        "proposedContent": proposed.to_dict(),
+        "explanation": request.explanation,
+        "proposalDiff": proposal_diff(base, proposed).to_dict(),
+        "rejectedBy": str(request.rejected_by) if request.rejected_by is not None else None,
+        "rejectionReason": request.rejection_reason,
+        "mergeRecord": _merge_record(request),
+    }
+
+
+def _merge_record(request: EditRequest) -> dict[str, Any] | None:
+    if request.merged_at is None:
+        return None
+    assert request.merged_title is not None and request.merged_body is not None
+    assert request.merged_note_version is not None and request.merged_by is not None
+    return {
+        "content": {"title": request.merged_title, "body": request.merged_body},
+        "noteETag": etags.quote(request.merged_note_version),
+        "mergedBy": str(request.merged_by),
+        "mergedAt": timestamp(request.merged_at),
     }
