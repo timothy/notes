@@ -74,10 +74,18 @@ def read(session: Session, *, caller: User, note_id: uuid.UUID, now: datetime) -
     return _visible_view(session, session.get(Note, note_id), caller, now)
 
 
-def lock(session: Session, *, caller: User, note_id: uuid.UUID, now: datetime) -> NoteView:
-    """The note locked for the rest of the transaction, with the same ``404`` rule as ``read``."""
+def lock(
+    session: Session, *, caller: User, note_id: uuid.UUID, now: datetime, lock_access: bool = False
+) -> NoteView:
+    """The note locked for the rest of the transaction, with the same ``404`` rule as ``read``.
+
+    ``lock_access=True`` also locks the share and membership rows the caller's access came from (``FOR
+    SHARE`` on PostgreSQL), for child mutations that a revocation must not race past; owners need no such
+    rows, and the note lock itself serializes ownership changes.
+    """
     statement = select(Note).where(Note.id == note_id).with_for_update()
-    return _visible_view(session, session.execute(statement).scalar_one_or_none(), caller, now)
+    note = session.execute(statement).scalar_one_or_none()
+    return _visible_view(session, note, caller, now, lock_access=lock_access)
 
 
 def require_owner(view: NoteView) -> None:
@@ -331,10 +339,12 @@ def _tag_rows(note_id: uuid.UUID, tags: list[str]) -> list[NoteTag]:
     return [NoteTag(note_id=note_id, position=position, tag=tag) for position, tag in enumerate(tags)]
 
 
-def _visible_view(session: Session, note: Note | None, caller: User, now: datetime) -> NoteView:
+def _visible_view(
+    session: Session, note: Note | None, caller: User, now: datetime, *, lock_access: bool = False
+) -> NoteView:
     if note is None:
         raise NotFound()
-    access = permissions.resolve(session, note.id, caller.id)
+    access = permissions.resolve(session, note.id, caller.id, lock=lock_access)
     if not permissions.visible(note, access, now):
         raise NotFound()
     return NoteView(note, owner_ids(session, note.id), tags_of(session, note.id), access)

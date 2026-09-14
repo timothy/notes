@@ -13,7 +13,7 @@ from typing import Any
 
 from fastapi.responses import JSONResponse
 
-from notes_api.models import Membership, Note, Share, Team, User
+from notes_api.models import Comment, Membership, Note, Share, Team, User
 from notes_api.services.permissions import Access
 
 TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%S.%fZ"
@@ -104,6 +104,17 @@ def share(row: Share) -> dict[str, Any]:
         "noteId": str(row.note_id),
         "recipient": {"type": row.recipient_type, "id": str(row.recipient_id)},
         "permissions": share_permissions(row),
+        "createdAt": timestamp(row.created_at),
+        "updatedAt": timestamp(row.updated_at),
+    }
+
+
+def comment(row: Comment) -> dict[str, Any]:
+    return {
+        "id": str(row.id),
+        "noteId": str(row.note_id),
+        "authorId": str(row.author_id),
+        "body": row.body,
         "createdAt": timestamp(row.created_at),
         "updatedAt": timestamp(row.updated_at),
     }

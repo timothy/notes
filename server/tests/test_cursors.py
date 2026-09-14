@@ -1,5 +1,5 @@
 """Cursors round-trip their key exactly, reject anything malformed or issued for another view, and page a
-table in ``moment DESC, id DESC`` order."""
+table in ``moment DESC, id DESC`` order, or oldest first for the collections the contract sorts that way."""
 
 from __future__ import annotations
 
@@ -101,35 +101,57 @@ def test_malformed_cursors_are_rejected(cursor: str) -> None:
         decode(cursor, VIEW)
 
 
-def test_pagination_orders_by_moment_then_id_and_stops_exactly(app: FastAPI) -> None:
-    moment = datetime(2026, 9, 13, 12, 0, tzinfo=UTC)
-    ids = sorted(uuid.uuid4() for _ in range(3))
-    older = uuid.UUID("ffffffff-ffff-4fff-8fff-ffffffffffff")  # the largest id, but one microsecond older
+MOMENT = datetime(2026, 9, 13, 12, 0, tzinfo=UTC)
+
+
+def seed_users(app: FastAPI, rows: list[tuple[uuid.UUID, datetime]]) -> None:
     with app.state.session_factory() as session, session.begin():
-        for index, user_id in enumerate(ids):
+        for index, (user_id, moment) in enumerate(rows):
             session.add(
                 User(id=user_id, issuer="i", subject=f"s{index}", display_name="x", created_at=moment)
             )
-        earlier = moment - timedelta(microseconds=1)
-        session.add(User(id=older, issuer="i", subject="older", display_name="x", created_at=earlier))
+
+
+def page(app: FastAPI, view: str, cursor: str | None, *, descending: bool = True) -> cursors.Page[User]:
+    with app.state.session_factory() as session:
+        return cursors.paginate(
+            session,
+            select(User),
+            moment=User.created_at,
+            id_column=User.id,
+            key_of=lambda row: Key(row.created_at, row.id),
+            limit=2,
+            cursor=cursor,
+            fingerprint=view,
+            descending=descending,
+        )
+
+
+def test_pagination_orders_by_moment_then_id_and_stops_exactly(app: FastAPI) -> None:
+    ids = sorted(uuid.uuid4() for _ in range(3))
+    older = uuid.UUID("ffffffff-ffff-4fff-8fff-ffffffffffff")  # the largest id, but one microsecond older
+    seed_users(app, [(user_id, MOMENT) for user_id in ids] + [(older, MOMENT - timedelta(microseconds=1))])
     view = fingerprint(CALLER, "users", {}, 2)
-
-    def page(cursor: str | None) -> cursors.Page[User]:
-        with app.state.session_factory() as session:
-            return cursors.paginate(
-                session,
-                select(User),
-                moment=User.created_at,
-                id_column=User.id,
-                key_of=lambda row: Key(row.created_at, row.id),
-                limit=2,
-                cursor=cursor,
-                fingerprint=view,
-            )
-
-    first = page(None)
+    first = page(app, view, None)
     assert [row.id for row in first.items] == [ids[2], ids[1]]
     assert first.next_cursor is not None
-    second = page(first.next_cursor)
+    second = page(app, view, first.next_cursor)
     assert [row.id for row in second.items] == [ids[0], older]
     assert second.next_cursor is None
+
+
+def test_ascending_pagination_orders_oldest_first_then_by_id_and_stops_exactly(app: FastAPI) -> None:
+    ids = sorted(uuid.uuid4() for _ in range(3))
+    newer = uuid.UUID("00000000-0000-4000-8000-000000000000")  # the smallest id, but one microsecond newer
+    seed_users(app, [(user_id, MOMENT) for user_id in ids] + [(newer, MOMENT + timedelta(microseconds=1))])
+    view = fingerprint(CALLER, "comments", {}, 2)
+    first = page(app, view, None, descending=False)
+    assert [row.id for row in first.items] == [ids[0], ids[1]]
+    assert first.next_cursor is not None
+    second = page(app, view, first.next_cursor, descending=False)
+    assert [row.id for row in second.items] == [ids[2], newer]
+    assert second.next_cursor is None
+    # The direction is a property of the collection, whose name is in the fingerprint, so a cursor cannot
+    # continue a view of the other kind.
+    with pytest.raises(InvalidCursor):
+        page(app, fingerprint(CALLER, "users", {}, 2), first.next_cursor)
