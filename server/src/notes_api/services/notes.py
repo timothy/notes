@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 
 from notes_api import etags
 from notes_api.clock import Clock
-from notes_api.http.problems import Forbidden, NotFound, PreconditionFailed
+from notes_api.http.problems import Conflict, Forbidden, NotFound, PreconditionFailed
 from notes_api.models import Note, NoteOwner, NoteTag, User
 from notes_api.services import permissions
 from notes_api.services.permissions import Access
@@ -85,6 +85,41 @@ def require_owner(view: NoteView) -> None:
 def require_version(view: NoteView, if_match: str) -> None:
     if if_match != view.etag:
         raise PreconditionFailed()
+
+
+def update(
+    session: Session,
+    *,
+    view: NoteView,
+    title: str | None,
+    body: str | None,
+    tags: list[str] | None,
+    clock: Clock,
+) -> NoteView:
+    """Apply a partial update to a note locked by ``lock`` whose owner and version were already checked.
+
+    A trashed note is ``409 note_not_active``. A protected note (more than one owner, counted under the
+    lock) refuses ``title`` and ``body`` whole with ``409 direct_edit_not_allowed``; tags may still change.
+    An effective change takes a new version and ``updated_at``; a no-op keeps both.
+    """
+    note = view.note
+    if permissions.is_trashed(note):
+        raise Conflict("note_not_active")
+    if (title is not None or body is not None) and len(view.owner_ids) > 1:
+        raise Conflict("direct_edit_not_allowed")
+    changed = False
+    if title is not None and title != note.title:
+        note.title, note.title_fold, changed = title, title.casefold(), True
+    if body is not None and body != note.body:
+        note.body, note.body_fold, changed = body, body.casefold(), True
+    if tags is not None and tags != view.tags:
+        replace_tags(session, note.id, tags)
+        changed = True
+    if changed:
+        note.version = etags.new_version()
+        note.updated_at = clock.now()
+        session.flush()
+    return NoteView(note, view.owner_ids, list(tags) if tags is not None else view.tags, view.access)
 
 
 def owner_ids(session: Session, note_id: uuid.UUID) -> list[uuid.UUID]:

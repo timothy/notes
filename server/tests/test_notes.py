@@ -182,3 +182,230 @@ def test_get_validates_the_path_and_needs_a_token(client: ContractClient, ada: P
     assert client.get(f"/v1/notes/{uuid.uuid4()}", auth=ada).status_code == 404
     assert client.get(f"/v1/notes/{note_id}").status_code == 401
     assert client.get("/v1/notes/not-a-uuid").status_code == 401
+
+
+# -- update: the ladder ---------------------------------------------------------------------------------
+
+
+def snapshot(app: FastAPI, note_id: str) -> tuple[Any, ...]:
+    """Every stored field of the note and its tags, to prove a failed request wrote nothing."""
+    from sqlalchemy import inspect as sa_inspect
+
+    from notes_api.models import Note, NoteTag
+
+    with app.state.session_factory() as session:
+        note = session.get(Note, uuid.UUID(note_id))
+        assert note is not None
+        columns = tuple(getattr(note, column.key) for column in sa_inspect(Note).columns)
+        tags = tuple(
+            session.execute(
+                __import__("sqlalchemy")
+                .select(NoteTag.position, NoteTag.tag)
+                .where(NoteTag.note_id == note.id)
+            ).all()
+        )
+        return columns, tags
+
+
+def test_an_effective_patch_advances_the_etag_and_a_no_op_does_not(
+    client: ContractClient, ada: Persona, clock: Any
+) -> None:
+    from datetime import timedelta
+
+    created = create(client, ada)
+    note_id, etag = created.json()["id"], created.headers["ETag"]
+    clock.advance(timedelta(minutes=1))
+    retitled = client.patch(
+        f"/v1/notes/{note_id}", auth=ada, if_match=etag, json={"title": "Release checklist (2026)"}
+    )
+    assert retitled.status_code == 200
+    assert retitled.json()["title"] == "Release checklist (2026)"
+    assert retitled.json()["body"] == CREATE_NOTE_REQUEST["body"] and retitled.json()["tags"] == ["release"]
+    assert retitled.json()["updatedAt"] == "2026-09-13T12:01:00.000000Z"
+    assert retitled.json()["createdAt"] == START_TS
+    assert ETAG.match(retitled.headers["ETag"]) and retitled.headers["ETag"] != etag
+    etag = retitled.headers["ETag"]
+    clock.advance(timedelta(minutes=1))
+    same = client.patch(
+        f"/v1/notes/{note_id}", auth=ada, if_match=etag, json={"title": "Release checklist (2026)"}
+    )
+    assert same.status_code == 200 and same.headers["ETag"] == etag
+    assert same.json() == retitled.json()
+    rebodied = client.patch(
+        f"/v1/notes/{note_id}", auth=ada, if_match=etag, json={"body": "new body", "tags": ["a", "b"]}
+    )
+    assert rebodied.status_code == 200 and rebodied.headers["ETag"] != etag
+    assert rebodied.json()["body"] == "new body" and rebodied.json()["tags"] == ["a", "b"]
+    assert rebodied.json()["updatedAt"] == "2026-09-13T12:02:00.000000Z"
+    assert client.get(f"/v1/notes/{note_id}", auth=ada).headers["ETag"] == rebodied.headers["ETag"]
+
+
+def test_tags_are_replaced_wholesale_in_the_supplied_order(client: ContractClient, ada: Persona) -> None:
+    created = create(client, ada, tags=["a", "b", "c"])
+    note_id, etag = created.json()["id"], created.headers["ETag"]
+    for tags in (["c", "a", "b"], ["b"], ["b", "x", "a"], [], ["z"]):
+        response = client.patch(f"/v1/notes/{note_id}", auth=ada, if_match=etag, json={"tags": tags})
+        assert response.status_code == 200, response.text
+        assert response.json()["tags"] == tags
+        etag = response.headers["ETag"]
+    assert client.get(f"/v1/notes/{note_id}", auth=ada).json()["tags"] == ["z"]
+
+
+def test_update_validates_the_body_before_anything_else(
+    client: ContractClient, ada: Persona, ben: Persona
+) -> None:
+    created = create(client, ada)
+    note_id, etag = created.json()["id"], created.headers["ETag"]
+    empty = client.patch(f"/v1/notes/{note_id}", auth=ada, if_match=etag, json={})
+    assert empty.status_code == 422 and errors(empty) == [("body", "")]
+    assert errors(client.patch(f"/v1/notes/{note_id}", auth=ada, if_match=etag, json={"title": None})) == [
+        ("body", "/title")
+    ]
+    assert errors(client.patch(f"/v1/notes/{note_id}", auth=ada, if_match=etag, json={"tags": None})) == [
+        ("body", "/tags")
+    ]
+    assert errors(client.patch(f"/v1/notes/{note_id}", auth=ada, if_match=etag, json={"nope": 1})) == [
+        ("body", "/nope")
+    ]
+    malformed = client.patch(
+        f"/v1/notes/{note_id}",
+        auth=ada,
+        if_match=etag,
+        content="{",
+        headers={"Content-Type": "application/json"},
+    )
+    assert malformed.status_code == 400
+    assert client.patch(f"/v1/notes/{note_id}", auth=ada, if_match=etag, content="{").status_code == 415
+    # Shape precedes visibility and authorization: a stranger's malformed body is 422, not 404.
+    assert client.patch(f"/v1/notes/{note_id}", auth=ben, json={}).status_code == 422
+    assert client.patch(f"/v1/notes/{uuid.uuid4()}", auth=ada, json={}).status_code == 422
+
+
+def test_visibility_and_authorization_precede_the_preconditions(
+    client: ContractClient, app: FastAPI, ada: Persona, ben: Persona, cara: Persona
+) -> None:
+    created = create(client, ada)
+    note_id = created.json()["id"]
+    grant(app, note_id, me(client, ben), comment=True, propose=True)
+    body = {"title": "Taken over"}
+    # A reader is 403 with or without a valid If-Match; a stranger is 404; neither learns about versions.
+    assert client.patch(f"/v1/notes/{note_id}", auth=ben, json=body).status_code == 403
+    assert (
+        client.patch(
+            f"/v1/notes/{note_id}", auth=ben, if_match=created.headers["ETag"], json=body
+        ).status_code
+        == 403
+    )
+    assert client.patch(f"/v1/notes/{note_id}", auth=ben, if_match='W/"x"', json=body).status_code == 403
+    assert client.patch(f"/v1/notes/{note_id}", auth=cara, json=body).status_code == 404
+    assert client.patch(f"/v1/notes/{uuid.uuid4()}", auth=ada, json=body).status_code == 404
+    assert client.get(f"/v1/notes/{note_id}", auth=ada).json()["title"] == "Release checklist"
+
+
+def test_preconditions_are_checked_in_order_and_a_stale_version_writes_nothing(
+    client: ContractClient, app: FastAPI, ada: Persona
+) -> None:
+    created = create(client, ada)
+    note_id, etag = created.json()["id"], created.headers["ETag"]
+    before = snapshot(app, note_id)
+    missing = client.patch(f"/v1/notes/{note_id}", auth=ada, json={"title": "x"})
+    assert missing.status_code == 428 and missing.json()["code"] == "precondition_required"
+    for malformed in ('W/"x"', "*", '"a", "b"', "note-v1", ""):
+        response = client.patch(f"/v1/notes/{note_id}", auth=ada, if_match=malformed, json={"title": "x"})
+        assert response.status_code == 400, malformed
+        assert response.json()["code"] == "malformed_request"
+        assert errors(response) == [("header", "If-Match")]
+    stale = client.patch(
+        f"/v1/notes/{note_id}", auth=ada, if_match='"0123456789abcdef0123456789abcdef"', json={"title": "x"}
+    )
+    assert stale.status_code == 412 and stale.json()["code"] == "precondition_failed"
+    assert snapshot(app, note_id) == before
+    assert client.get(f"/v1/notes/{note_id}", auth=ada).headers["ETag"] == etag
+
+
+def test_a_trashed_note_refuses_updates_with_the_current_etag(
+    client: ContractClient, app: FastAPI, ada: Persona
+) -> None:
+    from datetime import timedelta
+
+    from notes_api.models import Note
+
+    created = create(client, ada)
+    note_id, etag = created.json()["id"], created.headers["ETag"]
+    trashed_at = datetime(2026, 9, 13, 12, 0, tzinfo=UTC)
+    with app.state.session_factory() as session, session.begin():
+        note = session.get(Note, uuid.UUID(note_id))
+        assert note is not None
+        note.deleted_at, note.expires_at = trashed_at, trashed_at + timedelta(hours=720)
+    response = client.patch(f"/v1/notes/{note_id}", auth=ada, if_match=etag, json={"title": "x"})
+    assert response.status_code == 409 and response.json()["code"] == "note_not_active"
+    stale = client.patch(
+        f"/v1/notes/{note_id}", auth=ada, if_match='"0123456789abcdef0123456789abcdef"', json={"title": "x"}
+    )
+    assert stale.status_code == 412  # the version check still precedes the lifecycle check
+    assert client.get(f"/v1/notes/{note_id}", auth=ada).json()["deletedAt"] == START_TS
+
+
+def test_a_competing_update_committed_first_makes_the_second_stale(
+    client: ContractClient, app: FastAPI, ada: Persona, restore_hooks: None
+) -> None:
+    from notes_api import uow
+
+    created = create(client, ada)
+    note_id, etag = created.json()["id"], created.headers["ETag"]
+    competitor = ContractClient(app)
+    fired: list[str] = []
+
+    def before_begin(op: str) -> None:
+        if op == "update_note" and not fired:
+            fired.append(op)
+            assert (
+                competitor.patch(
+                    f"/v1/notes/{note_id}", auth=ada, if_match=etag, json={"title": "First"}
+                ).status_code
+                == 200
+            )
+
+    uow.hooks.before_begin = before_begin
+    second = client.patch(f"/v1/notes/{note_id}", auth=ada, if_match=etag, json={"title": "Second"})
+    assert second.status_code == 412 and fired == ["update_note"]
+    assert client.get(f"/v1/notes/{note_id}", auth=ada).json()["title"] == "First"
+
+
+def test_an_owner_added_between_read_and_write_protects_the_note(
+    client: ContractClient, app: FastAPI, ada: Persona, ben: Persona, restore_hooks: None
+) -> None:
+    from notes_api import uow
+    from notes_api.models import NoteOwner
+
+    created = create(client, ada)
+    note_id, etag = created.json()["id"], created.headers["ETag"]
+    ben_id = uuid.UUID(me(client, ben))
+    added: list[str] = []
+
+    def before_begin(op: str) -> None:
+        if op == "update_note" and not added:
+            added.append(op)
+            with app.state.session_factory() as session, session.begin():
+                now = datetime(2026, 9, 13, 12, 0, tzinfo=UTC)
+                session.add(NoteOwner(note_id=uuid.UUID(note_id), user_id=ben_id, position=1, added_at=now))
+
+    uow.hooks.before_begin = before_begin
+    refused = client.patch(f"/v1/notes/{note_id}", auth=ada, if_match=etag, json={"body": "direct"})
+    assert refused.status_code == 409 and refused.json()["code"] == "direct_edit_not_allowed"
+    assert added == ["update_note"]
+    tagged = client.patch(f"/v1/notes/{note_id}", auth=ada, if_match=etag, json={"tags": ["ops"]})
+    assert tagged.status_code == 200 and tagged.json()["tags"] == ["ops"]
+    assert tagged.json()["ownerIds"] == [me(client, ada), str(ben_id)]
+    titled = client.patch(
+        f"/v1/notes/{note_id}", auth=ada, if_match=tagged.headers["ETag"], json={"title": "x", "tags": []}
+    )
+    assert titled.status_code == 409 and client.get(f"/v1/notes/{note_id}", auth=ada).json()["tags"] == [
+        "ops"
+    ]
+    assert (
+        client.patch(
+            f"/v1/notes/{note_id}", auth=ben, if_match=tagged.headers["ETag"], json={"tags": []}
+        ).status_code
+        == 200
+    )
