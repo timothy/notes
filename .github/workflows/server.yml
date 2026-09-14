@@ -30,7 +30,7 @@ jobs:
         with:
           enable-cache: true
           cache-dependency-glob: server/uv.lock
-      - run: uv sync --frozen
+      - run: uv sync --locked
       - run: uv run ruff check .
       - run: uv run ruff format --check .
       - run: uv run mypy
@@ -41,7 +41,7 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:17
+        image: postgres:17.11
         env:
           POSTGRES_USER: notes
           POSTGRES_PASSWORD: notes
@@ -61,5 +61,5 @@ jobs:
         with:
           enable-cache: true
           cache-dependency-glob: server/uv.lock
-      - run: uv sync --frozen
+      - run: uv sync --locked
       - run: uv run pytest

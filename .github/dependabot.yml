@@ -1,0 +1,22 @@
+# Keeps the digest-pinned base images in the Dockerfile and compose.yaml current. The ignore rules hold the
+# lines that must move deliberately: uv stays on 0.11.x while pyproject pins uv_build <0.12, Python stays
+# on 3.12 like CI and mypy, and PostgreSQL stays on 17 because 18 moves the data directory and the CI
+# service image together.
+version: 2
+updates:
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    ignore:
+      - dependency-name: ghcr.io/astral-sh/uv
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
+      - dependency-name: python
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
+  - package-ecosystem: docker-compose
+    directory: /
+    schedule:
+      interval: weekly
+    ignore:
+      - dependency-name: postgres
+        update-types: ["version-update:semver-major"]
