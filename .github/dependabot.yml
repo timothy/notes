@@ -9,7 +9,8 @@ updates:
     schedule:
       interval: weekly
     ignore:
-      - dependency-name: ghcr.io/astral-sh/uv
+      # Dependabot names the image without its registry host ("astral-sh/uv"); the wildcard matches either form.
+      - dependency-name: "*astral-sh/uv"
         update-types: ["version-update:semver-minor", "version-update:semver-major"]
       - dependency-name: python
         update-types: ["version-update:semver-minor", "version-update:semver-major"]
