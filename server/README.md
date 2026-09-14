@@ -21,7 +21,7 @@ cd server && NOTES_API_TEST_DATABASE_URL=postgresql+psycopg://notes:notes@127.0.
 
 ## Container
 
-The image is the delivery unit: one non-root, read-only image built from the repository root (the server needs `openapi.yaml`), running a single uvicorn process per container and scaled with replicas. The same image runs migrations as a separate command. Base images are pinned by digest in the [`Dockerfile`](../Dockerfile); Dependabot proposes updates weekly.
+The image is the delivery unit: one non-root, read-only image built from the repository root (the server needs `openapi.yaml`), running a single uvicorn process per container and scaled with replicas. The same image runs migrations as a separate command. Base images are pinned by digest in the [`Dockerfile`](../Dockerfile) and Dependabot proposes updates weekly; because Docker Hub rebuilds the base only occasionally, the runtime stage also applies Debian's security updates at build time, and CI fails the image on any fixable CRITICAL or HIGH finding.
 
 ### Prerequisite on macOS with Homebrew Docker
 
@@ -91,4 +91,4 @@ The image assumes what the smoke test asserts. A Kubernetes `securityContext` sh
 
 ### What the image contains
 
-`/app/.venv` (the locked dependencies and `notes_api`, bytecode precompiled), `/app/openapi.yaml`, `/app/alembic.ini`, and `/app/alembic/`, all root-owned and read-only to the app user. It does not contain uv, the tests, dev dependencies, a shell entrypoint, or curl. The uncompressed image is about 75 MB.
+`/app/.venv` (the locked dependencies and `notes_api`, bytecode precompiled), `/app/openapi.yaml`, `/app/alembic.ini`, and `/app/alembic/`, all root-owned and read-only to the app user. Debian security updates are applied in the runtime stage; nothing else is installed. It does not contain uv, the tests, dev dependencies, a shell entrypoint, or curl. The uncompressed image is about 85 MB.

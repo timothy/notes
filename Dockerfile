@@ -28,7 +28,11 @@ RUN --mount=type=cache,target=/root/.cache/uv uv sync --locked --no-editable
 FROM python:3.12.14-slim-trixie@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea
 LABEL org.opencontainers.image.source=https://github.com/timothy/notes \
       org.opencontainers.image.licenses=Apache-2.0
-RUN groupadd --gid 10001 app \
+# Apply Debian security updates published since the pinned base was built, then drop the apt lists.
+RUN apt-get update \
+    && apt-get upgrade -y --no-install-recommends \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --gid 10001 app \
     && useradd --uid 10001 --gid 10001 --no-create-home --shell /usr/sbin/nologin app
 WORKDIR /app
 # Everything below is root-owned and read-only to the app user; the process writes nothing.
