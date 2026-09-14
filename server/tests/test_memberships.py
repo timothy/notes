@@ -131,7 +131,7 @@ def test_adding_checks_the_admin_then_the_body_then_the_user_then_duplicates(
     url = f"/v1/teams/{team}/members"
     assert client.post(url, auth=ben, json={"userId": me(client, cara)}).status_code == 403
     assert client.post(url, auth=cara, json={"userId": me(client, cara)}).status_code == 403
-    assert client.post(url, auth=ben, json={"userId": "not-a-uuid"}).status_code == 403
+    assert client.post(url, auth=ben, json={"userId": "not-a-uuid"}).status_code == 422  # shape before 403
     assert (
         client.post(f"/v1/teams/{uuid.uuid4()}/members", auth=ada, json={"userId": ben_id}).status_code == 404
     )

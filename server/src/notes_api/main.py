@@ -18,6 +18,7 @@ from notes_api.db import make_engine, make_session_factory
 from notes_api.http.health import install_health_routes
 from notes_api.http.middleware import NoStoreMiddleware
 from notes_api.http.problems import install_problem_handlers
+from notes_api.http.request_log import RequestLogMiddleware, configure_request_logging
 from notes_api.routers import install_routes
 
 
@@ -44,6 +45,8 @@ def create_base_app(settings: Settings | None = None, clock: Clock | None = None
     app.state.clock = clock or SystemClock()
     app.state.verifier = TokenVerifier(settings)
     app.add_middleware(NoStoreMiddleware)
+    app.add_middleware(RequestLogMiddleware)  # added last, so it is outermost and times everything
+    configure_request_logging()
     install_problem_handlers(app)
     install_health_routes(app)
     return app

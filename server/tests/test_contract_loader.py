@@ -6,7 +6,7 @@ from typing import Any
 import pytest
 import yaml
 
-from notes_api.contract import Contract
+from notes_api.contract import Contract, FieldError
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CASES: dict[str, list[dict[str, Any]]] = yaml.safe_load(
@@ -70,3 +70,22 @@ def test_empty_patch_is_reported_at_the_body_root(contract: Contract) -> None:
 def test_unknown_schema_name_is_a_programming_error(contract: Contract) -> None:
     with pytest.raises(KeyError):
         contract.validate_body("NoSuchSchema", {})
+
+
+def test_nul_characters_are_reported_at_their_pointers() -> None:
+    from notes_api.contract import nul_character_errors
+
+    instance = {
+        "title": "a\x00",
+        "tags": ["fine", "b\x00c"],
+        "nested": {"deep": ["\x00"]},
+        "n": 1,
+        "ok": "text",
+    }
+    assert [(error.location, error.pointer, error.detail) for error in nul_character_errors(instance)] == [
+        ("body", "/title", "must not contain NUL characters"),
+        ("body", "/tags/1", "must not contain NUL characters"),
+        ("body", "/nested/deep/0", "must not contain NUL characters"),
+    ]
+    assert nul_character_errors({"title": "clean"}) == []
+    assert nul_character_errors("\x00") == [FieldError("body", "", "must not contain NUL characters")]

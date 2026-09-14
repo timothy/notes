@@ -157,8 +157,8 @@ def test_only_admins_rename_or_delete_a_team(
     for persona in (ben, cara):
         assert client.patch(f"/v1/teams/{team_id}", auth=persona, json={"name": "Taken"}).status_code == 403
         assert client.delete(f"/v1/teams/{team_id}", auth=persona).status_code == 403
-        # A non-admin's malformed body is still 403: authorization precedes body validation.
-        assert client.patch(f"/v1/teams/{team_id}", auth=persona, json={"name": ""}).status_code == 403
+        # Request shape precedes authorization in the ladder: a malformed body is 422 for anyone.
+        assert client.patch(f"/v1/teams/{team_id}", auth=persona, json={"name": ""}).status_code == 422
     assert client.patch(f"/v1/teams/{uuid.uuid4()}", auth=ada, json={"name": "x"}).status_code == 404
     assert client.delete(f"/v1/teams/{uuid.uuid4()}", auth=ada).status_code == 404
     assert errors(client.patch("/v1/teams/not-a-uuid", auth=ada, json={"name": "x"})) == [("path", "teamId")]
