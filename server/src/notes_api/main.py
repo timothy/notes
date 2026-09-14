@@ -1,7 +1,8 @@
 """Application factory.
 
-The server exposes exactly the operations in ``openapi.yaml`` under ``/v1`` and nothing else: FastAPI's
-own OpenAPI document and docs pages are disabled, because the frozen contract is the only contract.
+The server exposes the operations in ``openapi.yaml`` under ``/v1`` plus two operational probes outside it
+(``/healthz`` and ``/readyz``, see ``notes_api.http.health``) and nothing else: FastAPI's own OpenAPI
+document and docs pages are disabled, because the frozen contract is the only contract.
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ from notes_api.clock import Clock, SystemClock
 from notes_api.config import Settings
 from notes_api.contract import load_contract
 from notes_api.db import make_engine, make_session_factory
+from notes_api.http.health import install_health_routes
 from notes_api.http.middleware import NoStoreMiddleware
 from notes_api.http.problems import install_problem_handlers
 
@@ -29,4 +31,5 @@ def create_app(settings: Settings | None = None, clock: Clock | None = None) -> 
     app.state.clock = clock or SystemClock()
     app.add_middleware(NoStoreMiddleware)
     install_problem_handlers(app)
+    install_health_routes(app)
     return app
