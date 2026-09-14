@@ -1,17 +1,20 @@
-"""Alembic environment: migrates the schema declared by ``notes_api.models``."""
+"""Alembic environment: migrates the schema declared by ``notes_api.models``.
+
+The database URL comes from ``Settings`` (``DATABASE_URL``) unless the caller set ``sqlalchemy.url``, so the
+migration step and the application read one configuration and fail the same way when it is missing.
+"""
 
 from __future__ import annotations
-
-import os
 
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 
+from notes_api.config import Settings
 from notes_api.models import Base
 
 config = context.config
 if not config.get_main_option("sqlalchemy.url"):
-    config.set_main_option("sqlalchemy.url", os.environ["DATABASE_URL"].replace("%", "%%"))
+    config.set_main_option("sqlalchemy.url", Settings().database_url.replace("%", "%%"))
 target_metadata = Base.metadata
 
 

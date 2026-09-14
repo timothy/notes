@@ -11,7 +11,9 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(extra="ignore")
 
     contract_path: Path = DEFAULT_CONTRACT_PATH
-    database_url: str = "sqlite:///./notes.sqlite"
+    # Required. Tests pass a SQLite URL explicitly and containers get PostgreSQL from the environment, so a
+    # process started without DATABASE_URL fails here instead of quietly writing a SQLite file somewhere.
+    database_url: str
 
     # Bearer access tokens are verified against this issuer's signing keys. Either a JWKS URL or an
     # inline JWKS document (JSON, used by tests) must be configured before authentication can succeed.
