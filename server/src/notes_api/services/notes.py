@@ -12,18 +12,20 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, or_, select
 from sqlalchemy.orm import Session
 
-from notes_api import etags
+from notes_api import cursors, etags
 from notes_api.clock import Clock
-from notes_api.http.problems import Conflict, Forbidden, NotFound, PreconditionFailed
-from notes_api.models import Note, NoteOwner, NoteTag, Share, User
+from notes_api.contract import FieldError
+from notes_api.http.problems import Conflict, Forbidden, NotFound, PreconditionFailed, ValidationFailed
+from notes_api.models import Membership, Note, NoteOwner, NoteTag, Share, User
 from notes_api.services import permissions
 from notes_api.services.permissions import Access
 
 SELF_MERGE = "self_merge"
 TRASH_RETENTION = timedelta(hours=720)  # "exactly 30 x 24 hours"
+NOTES_COLLECTION = "notes"
 
 
 @dataclass(frozen=True, slots=True)
@@ -154,6 +156,153 @@ def restore(session: Session, *, view: NoteView, clock: Clock) -> NoteView:
     note.updated_at = clock.now()
     session.flush()
     return NoteView(note, view.owner_ids, view.tags, view.access)
+
+
+@dataclass(frozen=True, slots=True)
+class ListFilters:
+    """The ``GET /notes`` filters, already parsed; ``tags`` keep their order for the fingerprint's sake."""
+
+    scope: str = "all"
+    state: str = "active"
+    q: str | None = None
+    tags: tuple[str, ...] = ()
+    team_id: uuid.UUID | None = None
+
+
+def list_notes(
+    session: Session, *, caller: User, filters: ListFilters, limit: int, cursor: str | None, now: datetime
+) -> cursors.Page[NoteView]:
+    """One page of the notes the caller may read, each once, newest first.
+
+    Access is expressed as ``EXISTS`` predicates (owner row, direct share, team share through a current
+    membership), so a note shared along several paths appears once. ``state=trashed`` is the caller's own
+    unexpired trash; ``scope=shared`` excludes owned notes; ``q`` is a folded literal substring over title or
+    body; each ``tag`` must be present; ``teamId`` requires a share to that team and grants nothing.
+    """
+    _check_filters(filters)
+    owner_row = select(NoteOwner.note_id).where(NoteOwner.note_id == Note.id, NoteOwner.user_id == caller.id)
+    direct_share = select(Share.id).where(
+        Share.note_id == Note.id, Share.recipient_type == permissions.USER, Share.recipient_id == caller.id
+    )
+    team_share = (
+        select(Share.id)
+        .join(Membership, Membership.team_id == Share.recipient_id)
+        .where(
+            Share.note_id == Note.id,
+            Share.recipient_type == permissions.TEAM,
+            Membership.user_id == caller.id,
+        )
+    )
+    owned, readable = owner_row.exists(), or_(owner_row.exists(), direct_share.exists(), team_share.exists())
+
+    statement = select(Note)
+    if filters.state == "trashed":
+        statement = statement.where(owned, Note.deleted_at.is_not(None), Note.expires_at > now)
+    else:
+        statement = statement.where(Note.deleted_at.is_(None))
+    if filters.scope == "mine":
+        statement = statement.where(owned)
+    elif filters.scope == "shared":
+        statement = statement.where(~owned, readable)
+    else:
+        statement = statement.where(readable)
+    if filters.q is not None:
+        folded = filters.q.casefold()
+        statement = statement.where(
+            or_(
+                Note.title_fold.contains(folded, autoescape=True),
+                Note.body_fold.contains(folded, autoescape=True),
+            )
+        )
+    for tag in filters.tags:
+        statement = statement.where(
+            select(NoteTag.tag).where(NoteTag.note_id == Note.id, NoteTag.tag == tag).exists()
+        )
+    if filters.team_id is not None:
+        to_team = select(Share.id).where(
+            Share.note_id == Note.id,
+            Share.recipient_type == permissions.TEAM,
+            Share.recipient_id == filters.team_id,
+        )
+        statement = statement.where(to_team.exists())
+
+    view = {
+        "scope": filters.scope,
+        "state": filters.state,
+        "q": filters.q,
+        "tag": sorted(filters.tags),
+        "teamId": str(filters.team_id) if filters.team_id is not None else None,
+    }
+    page = cursors.paginate(
+        session,
+        statement,
+        moment=Note.created_at,
+        id_column=Note.id,
+        key_of=lambda row: cursors.Key(row.created_at, row.id),
+        limit=limit,
+        cursor=cursor,
+        fingerprint=cursors.fingerprint(caller.id, NOTES_COLLECTION, view, limit),
+    )
+    return cursors.Page(views_for(session, page.items, caller), page.next_cursor)
+
+
+def views_for(session: Session, rows: list[Note], caller: User) -> list[NoteView]:
+    """Owners, tags, and the caller's access for a page of notes in five queries, never one per note."""
+    if not rows:
+        return []
+    ids = [row.id for row in rows]
+    owners: dict[uuid.UUID, list[uuid.UUID]] = {note_id: [] for note_id in ids}
+    for note_id, user_id in session.execute(
+        select(NoteOwner.note_id, NoteOwner.user_id)
+        .where(NoteOwner.note_id.in_(ids))
+        .order_by(NoteOwner.position)
+    ):
+        owners[note_id].append(user_id)
+    tags: dict[uuid.UUID, list[str]] = {note_id: [] for note_id in ids}
+    for note_id, tag in session.execute(
+        select(NoteTag.note_id, NoteTag.tag).where(NoteTag.note_id.in_(ids)).order_by(NoteTag.position)
+    ):
+        tags[note_id].append(tag)
+    owned = set(
+        session.execute(
+            select(NoteOwner.note_id).where(NoteOwner.note_id.in_(ids), NoteOwner.user_id == caller.id)
+        ).scalars()
+    )
+    granted: dict[uuid.UUID, list[Share]] = {note_id: [] for note_id in ids}
+    direct = select(Share).where(
+        Share.note_id.in_(ids), Share.recipient_type == permissions.USER, Share.recipient_id == caller.id
+    )
+    through_teams = (
+        select(Share)
+        .join(Membership, Membership.team_id == Share.recipient_id)
+        .where(
+            Share.note_id.in_(ids), Share.recipient_type == permissions.TEAM, Membership.user_id == caller.id
+        )
+    )
+    for share in [*session.execute(direct).scalars(), *session.execute(through_teams).scalars()]:
+        granted[share.note_id].append(share)
+    return [
+        NoteView(
+            row,
+            owners[row.id],
+            tags[row.id],
+            Access.owner() if row.id in owned else Access.from_shares(granted[row.id]),
+        )
+        for row in rows
+    ]
+
+
+def _check_filters(filters: ListFilters) -> None:
+    """The rules FastAPI's parameter validation cannot express: no duplicate tags and no NUL anywhere."""
+    errors: list[FieldError] = []
+    if len(set(filters.tags)) != len(filters.tags):
+        errors.append(FieldError("query", "tag", "must not contain duplicate items"))
+    if any("\x00" in tag for tag in filters.tags):
+        errors.append(FieldError("query", "tag", "must not contain NUL characters"))
+    if filters.q is not None and "\x00" in filters.q:
+        errors.append(FieldError("query", "q", "must not contain NUL characters"))
+    if errors:
+        raise ValidationFailed(errors, detail="A query parameter is invalid.")
 
 
 def owner_ids(session: Session, note_id: uuid.UUID) -> list[uuid.UUID]:

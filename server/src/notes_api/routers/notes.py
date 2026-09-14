@@ -3,22 +3,31 @@
 from __future__ import annotations
 
 import uuid
-from typing import Any
+from typing import Annotated, Any
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Query, Request
 from fastapi.responses import JSONResponse, Response
+from pydantic import StringConstraints
 
 from notes_api import serializers, uow
+from notes_api.contract import FieldError
 from notes_api.etags import parse_if_match
+from notes_api.generated.schemas import NoteScope, NoteState
 from notes_api.http.bodies import parse_body
 from notes_api.http.deps import CurrentUser
-from notes_api.routers import API_PREFIX, add_route, clock, sessions
+from notes_api.http.problems import ValidationFailed
+from notes_api.routers import API_PREFIX, Cursor, Limit, add_route, clock, sessions
 from notes_api.services import notes
-from notes_api.services.notes import NoteView
+from notes_api.services.notes import ListFilters, NoteView
+
+# The contract's Tag rule per value; the list's `maxItems: 10` is the Query's max_length. Duplicates and
+# NUL characters, which pydantic cannot express here, are rejected by the service.
+TagItem = Annotated[str, StringConstraints(min_length=1, max_length=64, pattern=r"^\S(?:[^\r\n]*\S)?$")]
 
 
 def install_note_routes(app: FastAPI) -> None:
     add_route(app, "POST", "/notes", create_note)
+    add_route(app, "GET", "/notes", list_notes)
     add_route(app, "GET", "/notes/{noteId}", get_note)
     add_route(app, "PATCH", "/notes/{noteId}", update_note)
     add_route(app, "DELETE", "/notes/{noteId}", trash_note)
@@ -39,6 +48,31 @@ def create_note(user: CurrentUser, request: Request) -> JSONResponse:
         payload, etag = _payload(view), view.etag
     location = f"{API_PREFIX}/notes/{payload['id']}"
     return serializers.json_response(payload, status=201, headers={"Location": location, "ETag": etag})
+
+
+def list_notes(
+    user: CurrentUser,
+    request: Request,
+    q: Annotated[str | None, Query(min_length=1, max_length=200)] = None,
+    tag: Annotated[list[TagItem] | None, Query(max_length=10)] = None,
+    scope: NoteScope = NoteScope.all,
+    state: NoteState = NoteState.active,
+    teamId: uuid.UUID | None = None,
+    limit: Limit = 25,
+    cursor: Cursor = None,
+) -> JSONResponse:
+    if len(request.query_params.getlist("q")) > 1:
+        raise ValidationFailed(
+            [FieldError("query", "q", "must not be repeated")], detail="A query parameter is invalid."
+        )
+    filters = ListFilters(scope=scope.value, state=state.value, q=q, tags=tuple(tag or ()), team_id=teamId)
+    with sessions(request)() as session, uow.transaction(session, "list_notes"):
+        page = notes.list_notes(
+            session, caller=user, filters=filters, limit=limit, cursor=cursor, now=clock(request).now()
+        )
+        items = [serializers.note_summary(v.note, v.owner_ids, v.tags, v.access) for v in page.items]
+        body = serializers.page(items, page.next_cursor)
+    return serializers.json_response(body)
 
 
 def get_note(user: CurrentUser, request: Request, noteId: uuid.UUID) -> JSONResponse:
