@@ -31,7 +31,7 @@ Runtime and layout
 2. Sync SQLAlchemy 2.0 with plain `def` endpoints in FastAPI's threadpool. No async database layer.
 3. Configuration via pydantic-settings: `DATABASE_URL` (required, no default; SQLite is tests-only), `OIDC_ISSUER` and `OIDC_AUDIENCE` (required, non-blank; amended 2026-09-14), exactly one of `OIDC_JWKS_URL` or an inline `OIDC_JWKS` (the compose stack and the tests use the inline form), `CONTRACT_PATH` (defaults to the checkout's `openapi.yaml`; the image sets `/app/openapi.yaml`). An empty variable counts as unset (`env_ignore_empty`), so compose can pass `${OIDC_JWKS_URL:-}`.
 4. Probes are `GET /healthz` (liveness, no dependencies) and `GET /readyz` (readiness, `SELECT 1`, `503` when the database is unreachable, no connection details in the body), outside `/v1` and outside the contract, blocked at the ingress. Superseded on 2026-09-13 the earlier "unauthenticated `GET /v1/me` returning the 401 Problem": Kubernetes `httpGet` probes fail on any status of 400 or above, so that signal could never serve as a probe.
-5. Delivery: pull requests per group of slices (0-1, then 2 and 3 separately as PR 2a and PR 2b since 2026-09-14, then 4, 5, and 6 separately as PR 3a, 3b, and 3c, then 7-9, 10-12, 13-14), each merged green before the next branch is cut from `main`, never stacked. `tasks/plan.md` and `tasks/todo.md` are committed in the first PR.
+5. Delivery: pull requests per group of slices (0-1, then 2 and 3 separately as PR 2a and PR 2b since 2026-09-14, then 4, 5, and 6 separately as PR 3a, 3b, and 3c, then 7, 8, and 9 separately as PR 4a, 4b, and 4c since 2026-09-14, then 10-12, 13-14), each merged green before the next branch is cut from `main`, never stacked. `tasks/plan.md` and `tasks/todo.md` are committed in the first PR.
 
 Contract plumbing
 6. Bodies are read from the raw request, not declared as FastAPI parameters, so the order is `415` (not `application/json`), `400 malformed_request` (unparseable or empty when required), then `422 validation_failed` from the spec schema with `errors[]` (location `body`, RFC 6901 pointer; unknown fields reported per key with detail `unknown field`). Query, header, and path errors are `422` with the parameter name; a missing `If-Match` is `428`; a weak, list, or `*` value is `400` with a `header` error named `If-Match`. Body-less actions ignore `Content-Type`.
@@ -102,6 +102,7 @@ Check ladder, in order: `401`; request shape (`415`, `400 malformed_request`, `4
 - Membership mutations check that the caller may act (`403`) before whether the target membership exists (`404`), so a nonmember cannot probe who belongs to a team.
 - Request strings may not contain U+0000 (`422` at the field's pointer); PostgreSQL text cannot store it. Added 2026-09-14 after the Schemathesis run produced a 500 on PostgreSQL.
 - Search folds with `casefold()` and does not NFC-normalize.
+- Comments (added 2026-09-14): an identical-body `PATCH` is a `200` no-op; a comment reached through another note's path is `404` before any `403`; owners of a trashed note read its comments, and every comment mutation on a trashed note is `409 note_not_active` after the `412` check.
 
 ## Task list
 
@@ -223,7 +224,9 @@ Verify: `tests/test_access_paths.py` tagged `acceptance("Overlapping grants")` a
 
 **Checkpoint G.**
 
-### Slice 7: comments (PR 4 with slices 8 and 9)
+### Slice 7: comments (PR 4a; slices 8 and 9 follow as PR 4b and 4c)
+
+(Amended 2026-09-14: `cursors.paginate(descending=False)` serves the `createdAt ASC, id ASC` order; child mutations lock the share and membership rows they were authorized by through `notes.lock(lock_access=True)`; a comment reached through another note's path is `404` before any `403`, since every reader may list a note's comments; an identical-body `PATCH` is a no-op; a trashed note's comments stay readable to its owners and every comment mutation there is `409 note_not_active` after the version check.)
 
 **T7.1 List, get, create comments (S).** Readers list and get (`createdAt ASC, id ASC`); create needs `comment` (owners always) else `403`; trashed: owners read, create `409 note_not_active`; `201` with `Location` and `ETag`.
 AC: a proposal-only recipient lists `200` and creates `403`; a comment reached through another note's path is `404`; creating a comment leaves the note ETag unchanged.
@@ -235,7 +238,7 @@ Verify: `tests/test_comments.py`. Deps: T7.1. Files: same.
 
 **Checkpoint H.**
 
-### Slice 8: edit requests: submit, inspect, list, revise, withdraw, reject
+### Slice 8: edit requests: submit, inspect, list, revise, withdraw, reject (PR 4b)
 
 **T8.1 POST /notes/{noteId}/edit-requests (M).** Lock note and permission rows; `propose_edit` else `403`; `baseNoteETag` versus version is `412` creating nothing; trashed `409`; proposed equal to the base is `422 /proposedContent`; base captured from the row; `201` with the flat `Location` and the request ETag; note untouched.
 AC: note ETag and `updatedAt` unchanged after submission; a stale base is `412` with zero rows written; an owner may submit on their own note, and `baseContent` or `tags` in the body is `422 unknown field`.
@@ -255,7 +258,7 @@ Verify: `tests/test_edit_requests.py` tagged `acceptance("Lifecycle")` and `acce
 
 **Checkpoint I.**
 
-### Slice 9: preview and merge under self_merge
+### Slice 9: preview and merge under self_merge (PR 4c)
 
 **T9.1 POST /edit-requests/{requestId}/preview (M).** Owner else `403` or `404`; one joined `SELECT`; closed `409 request_not_open`; trashed `409 note_not_active`; body optional; `finalContent` under `peer_approval` on a protected note is `422 /finalContent` (wired now, exercised in slice 11); returns `requestETag`, `currentNoteETag`, and the engine's preview result; no writes.
 AC: the `PreviewClean`, `PreviewConflict`, and `PreviewConflictResolved` shapes are reproduced from seeded rows, including retained conflicts with `usedFinalContent: true`; two consecutive previews change no version or `updatedAt`; after a note PATCH, `currentNoteETag` reflects the new version and the preview compares against the new body.

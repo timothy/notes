@@ -6,7 +6,8 @@ failure or fingerprint mismatch is the contract's ``400 invalid_cursor``. No sig
 re-applied on every page, so a forged cursor can only reposition the caller's own view.
 
 Pages are read with a row-value comparison ``(moment, id) < (:moment, :id)`` in ``moment DESC, id DESC``
-order and one row more than the limit, which tells whether a next page exists without counting.
+order (or ``>`` in ascending order for the collections the contract sorts oldest first, such as comments)
+and one row more than the limit, which tells whether a next page exists without counting.
 """
 
 from __future__ import annotations
@@ -99,12 +100,16 @@ def paginate[T](
     limit: int,
     cursor: str | None,
     fingerprint: str,
+    descending: bool = True,
 ) -> Page[T]:
-    """One page of ``statement`` sorted ``moment DESC, id DESC``, continuing after ``cursor`` when given."""
+    """One page of ``statement`` in ``moment DESC, id DESC`` order (ascending when ``descending`` is false),
+    continuing after ``cursor`` when given."""
     if cursor is not None:
         after = decode(cursor, fingerprint)
-        statement = statement.where(tuple_(moment, id_column) < (after.moment, after.id))
-    statement = statement.order_by(moment.desc(), id_column.desc()).limit(limit + 1)
+        position, last = tuple_(moment, id_column), (after.moment, after.id)
+        statement = statement.where(position < last if descending else position > last)
+    order = (moment.desc(), id_column.desc()) if descending else (moment.asc(), id_column.asc())
+    statement = statement.order_by(*order).limit(limit + 1)
     rows = list(session.execute(statement).scalars())
     items = rows[:limit]
     next_cursor = encode(key_of(items[-1]), fingerprint) if len(rows) > limit else None

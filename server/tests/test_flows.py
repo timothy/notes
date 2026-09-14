@@ -25,11 +25,9 @@ def examples() -> dict[str, Any]:
 def test_create_and_share(
     client: ContractClient, examples: dict[str, Any], ada: Persona, ben: Persona, cara: Persona
 ) -> None:
-    """Section 5, "Create and share": create, grant proposal-only access, widen it, revoke it.
-
-    The comment steps wait for slice 7; the independent team grant proves that revoking one share leaves
-    other paths intact.
-    """
+    """Section 5, "Create and share": create, grant proposal-only access, comment once the grant allows it,
+    widen it, revoke it. The independent team grant proves that revoking one share leaves other paths
+    intact."""
     # 1. The owner sends POST /notes.
     created = client.post("/v1/notes", auth=ada, json=examples["CreateNoteRequest"])
     assert created.status_code == 201
@@ -48,6 +46,10 @@ def test_create_and_share(
     assert share.headers["Location"] == f"/v1/notes/{note_id}/shares/{share_id}"
     seen = client.get(f"/v1/notes/{note_id}", auth=ben)
     assert seen.status_code == 200 and seen.json()["effectivePermissions"] == ["read", "propose_edit"]
+    # Ben can read existing comments but receives 403 if he tries to add one.
+    assert client.get(f"/v1/notes/{note_id}/comments", auth=ben).json() == {"items": [], "nextCursor": None}
+    refused = client.post(f"/v1/notes/{note_id}/comments", auth=ben, json=examples["CreateCommentRequest"])
+    assert refused.status_code == 403
 
     # 3. Widening the grant replaces the set and returns the canonical three.
     widened = client.patch(
@@ -60,6 +62,10 @@ def test_create_and_share(
         "comment",
         "propose_edit",
     ]
+    # A now-authorized recipient can POST to the note's /comments collection.
+    posted = client.post(f"/v1/notes/{note_id}/comments", auth=ben, json=examples["CreateCommentRequest"])
+    assert posted.status_code == 201 and posted.json()["body"] == examples["CreateCommentRequest"]["body"]
+    assert posted.headers["Location"] == f"/v1/notes/{note_id}/comments/{posted.json()['id']}"
 
     # 4. An independent team grant, then revocation of the direct share: the team path continues to apply.
     team_id = client.post("/v1/teams", auth=cara, json={"name": "Reviewers"}).json()["id"]
@@ -72,6 +78,6 @@ def test_create_and_share(
     assert client.delete(f"/v1/notes/{note_id}/shares/{share_id}", auth=ada).status_code == 204
     assert client.get(f"/v1/notes/{note_id}", auth=ben).json()["effectivePermissions"] == ["read"]
 
-    # Sharing changed nothing about the note itself.
+    # Sharing and commenting changed nothing about the note itself.
     unchanged = client.get(f"/v1/notes/{note_id}", auth=ada)
     assert unchanged.headers["ETag"] == etag and unchanged.json()["updatedAt"] == created.json()["updatedAt"]
