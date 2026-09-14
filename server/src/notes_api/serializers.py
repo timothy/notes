@@ -6,13 +6,15 @@ every request, so the serializer is short and the proof of conformance lives in 
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any
 
 from fastapi.responses import JSONResponse
 
-from notes_api.models import Membership, Team, User
+from notes_api.models import Membership, Note, Team, User
+from notes_api.services.permissions import Access
 
 TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%S.%fZ"
 
@@ -53,3 +55,34 @@ def membership(row: Membership) -> dict[str, Any]:
         "joinedAt": timestamp(row.joined_at),
         "updatedAt": timestamp(row.updated_at),
     }
+
+
+def review_policy(row: Note) -> dict[str, Any]:
+    return {"mode": row.review_mode, "requiredApprovals": row.review_required_approvals}
+
+
+def _note_fields(row: Note, owner_ids: list[uuid.UUID], tags: list[str], access: Access) -> dict[str, Any]:
+    return {
+        "id": str(row.id),
+        "authorId": str(row.author_id),
+        "ownerIds": [str(owner_id) for owner_id in owner_ids],
+        "reviewPolicy": review_policy(row),
+        "title": row.title,
+        "tags": list(tags),
+        "createdAt": timestamp(row.created_at),
+        "updatedAt": timestamp(row.updated_at),
+        "deletedAt": timestamp(row.deleted_at) if row.deleted_at is not None else None,
+        "expiresAt": timestamp(row.expires_at) if row.expires_at is not None else None,
+        "isOwner": access.is_owner,
+        "effectivePermissions": access.permissions(),
+    }
+
+
+def note(row: Note, owner_ids: list[uuid.UUID], tags: list[str], access: Access) -> dict[str, Any]:
+    """The full ``Note``; ``ownerIds`` and ``tags`` come ordered by position from the service."""
+    return {**_note_fields(row, owner_ids, tags, access), "body": row.body}
+
+
+def note_summary(row: Note, owner_ids: list[uuid.UUID], tags: list[str], access: Access) -> dict[str, Any]:
+    """A ``NoteSummary``: the note without its body, as list operations return it."""
+    return _note_fields(row, owner_ids, tags, access)
