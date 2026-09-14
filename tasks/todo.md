@@ -32,13 +32,20 @@ Checklist for `tasks/plan.md` (approved 2026-09-13). Each task's full descriptio
 - [x] C2.6 Docs and plan bookkeeping (S) — deps: C2.5. AC: `server/README.md` Container section; root README rows and Running the server; CHANGELOG Unreleased line; plan amendments (architecture, defaults 3/4/8/16/20, 24-28, verification 7).
 - [x] Checkpoint C2: all four workflows green on the PR
 
-## PR 2: slices 2 and 3
+## PR 2a: slice 2 (auth and directory; split from slice 3 on 2026-09-14)
 
-- [ ] T2.1 JWT verification and 401 (M) — deps: T0.5.
-- [ ] T2.2 Provisioning and GET /me (S) — deps: T2.1.
-- [ ] T2.3 Cursor codec, pagination helper, GET /users and /users/{userId} (M) — deps: T2.2.
-- [ ] Checkpoint C
-- [ ] T3.1 Teams CRUD (M) — deps: T2.3.
+- [x] T2.0 Harness guard and route helper (S) — deps: none. AC: the ContractClient rejects `include_router` routes with an explicit message; `routers.add_route` registers `/v1` routes it can see; `serializers` render the contract's timestamps, users, and pages.
+- [x] T2.1 Required OIDC configuration and safe errors (S) — deps: none. AC: `Settings()` without `OIDC_ISSUER`, `OIDC_AUDIENCE`, or exactly one of `OIDC_JWKS_URL`/`OIDC_JWKS` raises naming the variable; blanks count as unset; `load_settings()` names variables but never values.
+- [x] T2.2 Dev issuer module (S) — deps: none. AC: `python -m notes_api.dev_issuer env` prints four single-quoted `.env` lines that round-trip into an issuer whose JWKS verifies its tokens; `token --sub` mints from `NOTES_DEV_ISSUER_KEY`; runs without `DATABASE_URL`.
+- [x] T2.3 JWT verification and 401 (M) — deps: T2.1. AC: every rejection is `401` with the challenge (`error="invalid_token"` exactly when a token was present); `at+jwt`, `JWT`, and no `typ` pass; a JWKS fetch failure is `401`, not `500`; `401` precedes `422`.
+- [x] T2.4 Provisioning and GET /me (M) — deps: T2.3. AC: `GET /me` twice returns one id; four personas get four ids; a competitor inserting the identity in `before_begin("provision_user")` is reused; eight threads produce one row; the display name is never refreshed.
+- [x] T2.5 Cursors, pagination, GET /users and /users/{userId} (M) — deps: T2.4. AC: `limit=0`, `101`, `abc` are `422 query/limit`; a cursor reused with another limit, by another caller, or tampered is `400 invalid_cursor`; ties page by id; `/users/{userId}` is `404` or `422 path/userId`.
+- [x] T2.6 Compose, smoke, docs, bookkeeping (M) — deps: T2.5. AC: `smoke OK` with the fail-fast split and the authenticated `GET /v1/me`; `docker compose config -q` passes with no `.env`; READMEs, CHANGELOG, and the plan are current.
+- [ ] Checkpoint C: all four workflows green on the PR
+
+## PR 2b: slice 3 (teams and memberships)
+
+- [ ] T3.1 Teams CRUD (M) — deps: T2.5.
 - [ ] T3.2 Memberships with last-admin atomicity (M) — deps: T3.1.
 - [ ] Checkpoint D: "Directory and teams" row complete
 

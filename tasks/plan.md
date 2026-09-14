@@ -20,16 +20,18 @@ Local tooling present: uv 0.11.7, Python 3.12.11 (matches CI) and 3.14.0, Docker
 - **Merge engine is a pure module built first.** No server or database dependency, byte-exact fixtures from the spec's examples, property tests.
 - **Whole schema in one migration.** The data model is fully specified by the contract; slices add code, not tables.
 - **The container image is the delivery unit** (added 2026-09-13). One digest-pinned, non-root, read-only image built from the repository root because it needs `openapi.yaml`; the same image runs `alembic upgrade head` as a separate step, never at process start. No shell entrypoint, no uv, tests, or dev dependencies at runtime. Tests stay uv-native in `server.yml`; `image.yml` proves the artifact.
-- **Fail fast on configuration** (added 2026-09-13). `Settings()` raises when `DATABASE_URL` is unset and Alembic reads the same `Settings`, so a misconfigured container refuses to boot instead of quietly running on SQLite. Liveness has no dependencies and readiness pings the database, so a database incident never restarts the fleet but does take dead replicas out of rotation.
+- **Fail fast on configuration** (added 2026-09-13; extended 2026-09-14). `Settings()` raises when `DATABASE_URL`, `OIDC_ISSUER`, or `OIDC_AUDIENCE` is unset or when the key source is not exactly one of `OIDC_JWKS_URL`/`OIDC_JWKS`, and Alembic reads the same `Settings`, so a misconfigured container refuses to boot instead of quietly running on SQLite or accepting no token. `load_settings()` reports the variables, never their values, so the database password cannot reach the logs. Liveness has no dependencies and readiness pings the database, so a database incident never restarts the fleet but does take dead replicas out of rotation.
+- **Routes are registered directly on the app** (added 2026-09-14). FastAPI 0.141 wraps `include_router` routes in a private object the test harness cannot resolve, so every operation goes through `routers.add_route` (`app.add_api_route` with the `/v1` prefix) and the `ContractClient` rejects any other kind of route.
+- **The image carries a development identity provider** (added 2026-09-14). The compose stack and the smoke test have no issuer, so `python -m notes_api.dev_issuer` generates a key pair, prints the `.env` lines the stack reads, and mints tokens; the tests' local issuer is the same class. A deployment configures a real provider through `OIDC_JWKS_URL` and never sets `NOTES_DEV_ISSUER_KEY`.
 
 ## Defaults you can veto
 
 Runtime and layout
 1. Layout: `server/pyproject.toml`, `server/src/notes_api/` with `main.py`, `config.py`, `clock.py`, `db.py`, `models.py`, `uow.py`, `contract.py`, `etags.py`, `cursors.py`, `serializers.py`, `cli.py`, `generated/schemas.py` (never edited by hand), `http/` (problems, middleware, bodies, deps), `auth/`, `merge/`, `services/`, `routers/`; tests in `server/tests/` with `merge/`, `conformance/`, and one acceptance module per row.
 2. Sync SQLAlchemy 2.0 with plain `def` endpoints in FastAPI's threadpool. No async database layer.
-3. Configuration via pydantic-settings: `DATABASE_URL` (required, no default; SQLite is tests-only), `OIDC_ISSUER`, `OIDC_AUDIENCE`, `OIDC_JWKS_URL` (or an inline JWKS for tests), `CONTRACT_PATH` (defaults to the checkout's `openapi.yaml`; the image sets `/app/openapi.yaml`).
+3. Configuration via pydantic-settings: `DATABASE_URL` (required, no default; SQLite is tests-only), `OIDC_ISSUER` and `OIDC_AUDIENCE` (required, non-blank; amended 2026-09-14), exactly one of `OIDC_JWKS_URL` or an inline `OIDC_JWKS` (the compose stack and the tests use the inline form), `CONTRACT_PATH` (defaults to the checkout's `openapi.yaml`; the image sets `/app/openapi.yaml`). An empty variable counts as unset (`env_ignore_empty`), so compose can pass `${OIDC_JWKS_URL:-}`.
 4. Probes are `GET /healthz` (liveness, no dependencies) and `GET /readyz` (readiness, `SELECT 1`, `503` when the database is unreachable, no connection details in the body), outside `/v1` and outside the contract, blocked at the ingress. Superseded on 2026-09-13 the earlier "unauthenticated `GET /v1/me` returning the 401 Problem": Kubernetes `httpGet` probes fail on any status of 400 or above, so that signal could never serve as a probe.
-5. Delivery: six pull requests, one per group of slices (0-1, 2-3, 4-6, 7-9, 10-12, 13-14), each merged green before the next starts. `tasks/plan.md` and `tasks/todo.md` are committed in the first PR.
+5. Delivery: pull requests per group of slices (0-1, then 2 and 3 separately as PR 2a and PR 2b since 2026-09-14, 4-6, 7-9, 10-12, 13-14), each merged green before the next branch is cut from `main`, never stacked. `tasks/plan.md` and `tasks/todo.md` are committed in the first PR.
 
 Contract plumbing
 6. Bodies are read from the raw request, not declared as FastAPI parameters, so the order is `415` (not `application/json`), `400 malformed_request` (unparseable or empty when required), then `422 validation_failed` from the spec schema with `errors[]` (location `body`, RFC 6901 pointer; unknown fields reported per key with detail `unknown field`). Query, header, and path errors are `422` with the parameter name; a missing `If-Match` is `428`; a weak, list, or `*` value is `400` with a `header` error named `If-Match`. Body-less actions ignore `Content-Type`.
@@ -47,7 +49,7 @@ Data
 16. SQLite is configured for real write serialization: `isolation_level=None`, `BEGIN IMMEDIATE` emitted on every transaction begin, WAL, `busy_timeout=5000`, `foreign_keys=ON`. Tests use a file database in `tmp_path`, never `:memory:`, so multiple connections work. SQLite is tests-only: there is no default `DATABASE_URL`, and containers run PostgreSQL, whose engine gets a five-second `connect_timeout`.
 
 Auth
-17. PyJWT with `PyJWKClient` (or inline JWKS), algorithms `RS256` and `ES256`, verifying signature, `iss`, `aud`, `exp`, `nbf`. `(iss, sub)` maps to one local user; provisioning is a `SAVEPOINT` insert with `IntegrityError` re-select, so concurrent first access cannot duplicate. `displayName` comes from `name`, else `preferred_username`, else `user-` plus the first 8 characters of `sub`, truncated to 200 code points. The 401 challenge is `Bearer realm="notes-api"`, adding `error="invalid_token"` when a token was present. Opaque tokens and introspection are deferred.
+17. PyJWT with `PyJWKClient` (or inline JWKS), algorithms `RS256` and `ES256`, verifying signature, `iss`, `aud`, `exp`, `nbf` (60 s leeway, against system time: PyJWT has no injectable clock, so the `Clock` governs timestamps only; amended 2026-09-14), requiring `exp` and `sub`, and accepting a `typ` header only when it is `at+jwt` or `JWT`. `(iss, sub)` maps to one local user; provisioning is a lookup transaction and then, on a miss, a second transaction with a `SAVEPOINT` insert and an `IntegrityError` re-select, so concurrent first access cannot duplicate and `hooks.before_begin("provision_user")` fires exactly between the miss and the insert (with `BEGIN IMMEDIATE` a single transaction could not be interleaved on SQLite; amended 2026-09-14). `displayName` comes from `name`, else `preferred_username`, else `user-` plus the first 8 characters of `sub`, truncated to 200 code points, never refreshed. The 401 challenge is `Bearer realm="notes-api"`, adding `error="invalid_token"` when a token was present. Opaque tokens and introspection are deferred.
 
 Testing and CI
 18. The unit-of-work wrapper `transaction(session, op)` calls `hooks.before_begin(op)` (a no-op in production) before `BEGIN`. Race tests run a competitor inside that hook in its own session, which proves every check lives inside the transaction, deterministically on SQLite. Thread-and-barrier tests assert the outcome set (`{200, 412}`) and run unchanged on PostgreSQL.
@@ -94,7 +96,10 @@ Check ladder, in order: `401`; request shape (`415`, `400 malformed_request`, `4
 - Unknown route or undeclared method: `404 not_found`.
 - An owner who proposed on their own note sees that request under `view=outgoing&state=trashed`; the contract's "empty" statement is about non-owner proposers.
 - `approval_required` is checked before `merge_conflict`.
-- Display-name claim precedence: `name`, `preferred_username`, `user-<sub prefix>`.
+- Display-name claim precedence: `name`, `preferred_username`, `user-<sub prefix>`; never refreshed after provisioning.
+- A missing `typ` header is accepted; a present one must be `at+jwt` or `JWT` (case-insensitive).
+- Cursors are bound to the caller as well as the collection, filters, and limit.
+- Membership mutations check that the caller may act (`403`) before whether the target membership exists (`404`), so a nonmember cannot probe who belongs to a team.
 - Search folds with `casefold()` and does not NFC-normalize.
 
 ## Task list
@@ -151,8 +156,8 @@ Verify: `tests/merge/test_acceptance.py` tagged `acceptance("Text merge")`. Deps
 AC: missing, expired, wrong-audience, wrong-issuer, and unsigned tokens are `401` with `WWW-Authenticate`; a valid token passes; a JWKS fetch failure is `401`, not `500`; `docker compose up --wait` still boots the api, with any newly required `OIDC_*` setting documented as a `.env` key in `server/README.md`.
 Verify: `tests/test_auth.py`. Deps: T0.5. Files: `auth/jwt.py`, `http/deps.py`, `config.py`.
 
-**T2.2 Provisioning and GET /me (S).** `auth/provisioning.py::get_or_create_user` (select, `SAVEPOINT` insert, `IntegrityError`, re-select); router for `/v1/me`; `main.py` app factory wiring.
-AC: `GET /me` twice returns the same id; eight threads with one fresh identity produce one row; a hook-based test that inserts the identity between the miss and the insert still succeeds with that row.
+**T2.2 Provisioning and GET /me (S).** `auth/provisioning.py::get_or_create_user` (a lookup transaction; on a miss a second transaction with a `SAVEPOINT` insert, `IntegrityError`, re-select; amended 2026-09-14, see default 17); router for `/v1/me`; `main.py` app factory wiring.
+AC: `GET /me` twice returns the same id; eight threads with one fresh identity produce one row; a hook-based test that inserts the identity in `before_begin("provision_user")`, between the miss and the insert, still succeeds with that row.
 Verify: `tests/test_users.py` tagged `acceptance("Directory and teams")`. Deps: T2.1. Files: `auth/provisioning.py`, `routers/users.py`, `services/users.py`, `main.py`.
 
 **T2.3 Cursor codec, pagination helper, GET /users and /users/{userId} (M).** `cursors.py::encode/decode`; `paginate(query, order, limit, cursor)` fetching `limit + 1` with a `tuple_` row-value comparison on `(created_at, id)`; `GET /users` sorted `createdAt DESC, id DESC`; `GET /users/{userId}` with `404`.

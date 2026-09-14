@@ -40,13 +40,17 @@ docker buildx version
 From the repository root:
 
 ```sh
-docker build -t notes-api:dev .
-docker compose up --build --wait
-curl -si http://127.0.0.1:8000/healthz
+docker compose build
+docker compose run --rm --no-deps -T api python -m notes_api.dev_issuer env > .env
+docker compose up --wait
+TOKEN=$(docker compose run --rm --no-deps -T api python -m notes_api.dev_issuer token --sub ada --name 'Ada Okafor')
+curl -si -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8000/v1/me
 docker compose down -v
 ```
 
-[`compose.yaml`](../compose.yaml) starts PostgreSQL 17 (`db`), applies the migration in a one-shot container (`migrate`), and starts the API (`api`) once the migration has completed. The `api` and `migrate` services run with a read-only root filesystem, no capabilities, `no-new-privileges`, and a tmpfs at `/tmp`, the same constraints a deployment should use. If port 8000 or 5432 is taken on your machine, set `NOTES_API_PORT` or `NOTES_API_DB_PORT`. Optional settings such as `OIDC_*` go in a gitignored `.env` next to `compose.yaml`.
+[`compose.yaml`](../compose.yaml) starts PostgreSQL 17 (`db`), applies the migration in a one-shot container (`migrate`), and starts the API (`api`) once the migration has completed. The `api` and `migrate` services run with a read-only root filesystem, no capabilities, `no-new-privileges`, and a tmpfs at `/tmp`, the same constraints a deployment should use. If port 8000 or 5432 is taken on your machine, set `NOTES_API_PORT` or `NOTES_API_DB_PORT`.
+
+The server refuses to start without an identity provider, and the stack has none, so the image carries a development one: `python -m notes_api.dev_issuer env` generates a key pair and prints the `.env` lines the stack reads (`OIDC_ISSUER`, `OIDC_AUDIENCE`, the public key as an inline `OIDC_JWKS`, and the private key as `NOTES_DEV_ISSUER_KEY`), and `token --sub <subject> --name <display name>` mints an RS256 access token with it; every distinct `--sub` is a distinct user. The file is gitignored. It is a development convenience only: a deployment sets `OIDC_JWKS_URL` to a real provider and never sets `NOTES_DEV_ISSUER_KEY`.
 
 ### Smoke test
 
@@ -54,7 +58,7 @@ docker compose down -v
 NOTES_API_IMAGE=notes-api:dev server/scripts/smoke_image.sh
 ```
 
-The script drives `compose.yaml` and asserts the container contract: the image refuses to start without `DATABASE_URL`; the stack comes up; the api runs as uid 10001 with no capabilities, `no-new-privileges`, uvicorn as PID 1, a read-only root filesystem, a writable `/tmp`, and no uv or test tooling; the probes answer and everything else is the contract's `404` Problem; readiness follows the database down and back up; the schema is at head and migrating again is a no-op; SIGTERM stops the api cleanly; the source label is set. CI runs the same script in [`.github/workflows/image.yml`](../.github/workflows/image.yml) after hadolint and a Trivy scan for fixable CRITICAL and HIGH vulnerabilities.
+The script drives `compose.yaml` and asserts the container contract: the image refuses to start without `DATABASE_URL` or without the OIDC settings, naming the variable and never the database password; the stack comes up with keys from the image's own dev issuer; the api runs as uid 10001 with no capabilities, `no-new-privileges`, uvicorn as PID 1, a read-only root filesystem, a writable `/tmp`, and no uv or test tooling; the probes answer and every unknown route or undeclared method is the contract's `404` Problem; `GET /v1/me` is `401` with the bearer challenge without a token, `401` with `error="invalid_token"` with a bad one, and `200` with a minted one; readiness follows the database down and back up; the schema is at head and migrating again is a no-op; SIGTERM stops the api cleanly; the source label is set. CI runs the same script in [`.github/workflows/image.yml`](../.github/workflows/image.yml) after hadolint and a Trivy scan for fixable CRITICAL and HIGH vulnerabilities.
 
 ### Configuration
 
@@ -64,9 +68,29 @@ Settings are read from the environment by pydantic-settings with no prefix (`not
 | --- | --- | --- |
 | `DATABASE_URL` | yes | SQLAlchemy URL; in a deployment `postgresql+psycopg://user:password@host:5432/db`. It carries a password: inject it from a secret store, never bake it into an image or commit it. A process without it refuses to start. SQLite URLs are for tests only. |
 | `CONTRACT_PATH` | preset in the image | `/app/openapi.yaml`. Outside a container it defaults to the checkout's `openapi.yaml`. |
-| `OIDC_ISSUER`, `OIDC_AUDIENCE`, `OIDC_JWKS_URL`, `OIDC_JWKS` | from slice 2 | Token verification (task T2.1). For the compose stack, put them in `.env`. |
+| `OIDC_ISSUER`, `OIDC_AUDIENCE` | yes | The `iss` and `aud` every bearer token must carry. A process without them refuses to start. |
+| `OIDC_JWKS_URL` or `OIDC_JWKS` | exactly one | Where the issuer's signing keys come from: the JWKS URL of a real identity provider (fetched on demand, cached in memory for five minutes, never at start-up), or an inline JWKS document (JSON) as the compose stack and the tests use. Both or neither refuses to start; an empty value counts as unset. |
+| `NOTES_DEV_ISSUER_KEY` | never in a deployment | The dev issuer's private key (base64 PKCS#8), written to `.env` by `python -m notes_api.dev_issuer env` and read only by `... token`. The server ignores it. |
 | `FORWARDED_ALLOW_IPS` | behind a proxy | uvicorn trusts `X-Forwarded-*` headers from loopback only. Set the ingress CIDR, never `*`. |
 | `WEB_CONCURRENCY` | leave unset | One uvicorn worker per container; scale with replicas. |
+
+A misconfigured process prints which variables are missing or invalid and exits; the message never contains a value, so the database password cannot reach the logs that way.
+
+### Authentication
+
+Requests to `/v1` carry `Authorization: Bearer <access token>`. The token must be a JWT signed with `RS256` or `ES256` by a key the configured source holds (selected by `kid`), with `iss` and `aud` equal to the settings, `exp` and `sub` present, and `exp` and `nbf` valid within a 60-second leeway; a `typ` header, when present, must be `at+jwt` or `JWT`. Anything else is the contract's `401` with `WWW-Authenticate: Bearer realm="notes-api"`, plus `error="invalid_token"` when a token was present; the response never says why. Time claims are checked against system time.
+
+The validated `(iss, sub)` maps to one local user, created on first contact with `displayName` taken from the `name` claim, else `preferred_username`, else `user-` and the first eight characters of `sub`, cut to 200 code points. Concurrent first requests create one row: the insert runs under a savepoint and a constraint violation re-selects the winner.
+
+### Interpretations pinned by tests
+
+Where the contract leaves a choice, the server's choice is fixed by a test and listed here.
+
+- An unknown route or an undeclared method on a known path is `404 not_found`; the server never emits a status the contract does not declare.
+- A missing `typ` header is accepted; a present one must name an access token (`at+jwt` or `JWT`, case-insensitive).
+- `displayName` precedence is `name`, `preferred_username`, `user-<sub prefix>`, and it is never refreshed after provisioning.
+- Cursors are bound to the caller as well as the collection, filters, and limit; another user cannot continue your page.
+- Search folds with `casefold()` and does not NFC-normalize (from slice 5).
 
 ### Migrations
 
