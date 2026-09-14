@@ -107,10 +107,10 @@ Checklist for `tasks/plan.md` (approved 2026-09-13). Each task's full descriptio
 
 ## PR 5b: slice 11 (approvals)
 
-- [ ] T11.1 Approve and revoke-approval (M) — deps: T10.2.
-- [ ] T11.2 Peer approval end to end, races, and the "Protect a note" flow (M) — deps: T11.1.
-- [ ] T11.3 Docs and bookkeeping (S) — deps: T11.2.
-- [ ] Checkpoint L
+- [x] T11.1 Approve and revoke-approval (M) — deps: T10.2. AC: Cara's approval returns the `EditRequestApproved` shape and a repeat the same ETag; revoking restores the awaiting shape and a missing approval is a no-op; the proposer approving is `403` equal to `ProblemSelfApproval` whether or not they own the note, the proposer revoking `403` with the default detail, a non-inspector `404`; `428`/`400`/`412`; closed `412` then `409 request_not_open`; trashed `409`; approvals are recorded on `self_merge` and single-owner notes; a content revision through the API deletes them, an explanation-only one keeps them; two approvers render in `approvedAt` order; no body is read.
+- [x] T11.2 Peer approval end to end, races, and the "Protect a note" flow (M) — deps: T11.1. AC: the section 5 flow reproduces `NoteRunbookProtected`, `NoteRunbookPeerApproval`, `EditRequestAwaitingApproval`, `EditRequestApproved`, `MergeResultPeerApproval`, and `NoteRunbookAfterOwnerLeft` once ids, versions, and timestamps are substituted, including the early `approval_required` and `finalContent` refusals, Cara's direct merge as the one approval, Ben's proposal needing two owners, and Cara's departure; an approval and a revision racing on one request ETag permit exactly one (hooks both ways, then threads); an owner removed after approving makes the merge `412` then `409 approval_required`; an approval committed before a merge that needed it makes the merge `412` and the retry lands; the conformance run covers approve and revoke.
+- [x] T11.3 Docs and bookkeeping (S) — deps: T11.2.
+- [x] Checkpoint L: all four workflows green on PR #21 (2026-09-14); the "Protect a note" flow passes
 
 ## PR 5c: slice 12 (request comments, the full conformance run, the acceptance audit)
 

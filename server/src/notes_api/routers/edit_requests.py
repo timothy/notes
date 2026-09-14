@@ -19,7 +19,7 @@ from notes_api.http.bodies import parse_body
 from notes_api.http.deps import CurrentUser
 from notes_api.merge.three_way import Content
 from notes_api.routers import API_PREFIX, Cursor, Limit, add_route, clock, sessions
-from notes_api.services import edit_requests, notes
+from notes_api.services import approvals, edit_requests, notes
 
 
 def install_edit_request_routes(app: FastAPI) -> None:
@@ -32,6 +32,8 @@ def install_edit_request_routes(app: FastAPI) -> None:
     add_route(app, "POST", "/edit-requests/{requestId}/reject", reject_edit_request)
     add_route(app, "POST", "/edit-requests/{requestId}/preview", preview_edit_request)
     add_route(app, "POST", "/edit-requests/{requestId}/merge", merge_edit_request)
+    add_route(app, "POST", "/edit-requests/{requestId}/approve", approve_edit_request)
+    add_route(app, "POST", "/edit-requests/{requestId}/revoke-approval", revoke_edit_request_approval)
 
 
 def list_note_edit_requests(
@@ -192,4 +194,31 @@ def merge_edit_request(user: CurrentUser, request: Request, requestId: uuid.UUID
             now=now,
         )
         payload, etag = serializers.merge_result(rv), rv.etag
+    return serializers.json_response(payload, headers={"ETag": etag})
+
+
+def approve_edit_request(user: CurrentUser, request: Request, requestId: uuid.UUID) -> JSONResponse:
+    """No request body. The proposer is 403 with the self-approval detail before any other rule, then a
+    non-owner is 403, then If-Match (428/400), 412, 409 request_not_open, 409 note_not_active, the write."""
+    now = clock(request).now()
+    with sessions(request)() as session, uow.transaction(session, "approve_edit_request"):
+        rv = edit_requests.inspect(session, caller=user, request_id=requestId, now=now, lock=True)
+        approvals.require_not_proposer(rv, user, detail=approvals.SELF_APPROVAL_DETAIL)
+        notes.require_owner(rv.note)
+        edit_requests.require_version(rv, parse_if_match(request.headers.get("if-match")))
+        rv = approvals.approve(session, rv=rv, approver=user, now=now)
+        payload, etag = serializers.edit_request(rv), rv.etag
+    return serializers.json_response(payload, headers={"ETag": etag})
+
+
+def revoke_edit_request_approval(user: CurrentUser, request: Request, requestId: uuid.UUID) -> JSONResponse:
+    """No request body; the same ladder as approve with the default 403 detail for the proposer."""
+    now = clock(request).now()
+    with sessions(request)() as session, uow.transaction(session, "revoke_edit_request_approval"):
+        rv = edit_requests.inspect(session, caller=user, request_id=requestId, now=now, lock=True)
+        approvals.require_not_proposer(rv, user, detail=None)
+        notes.require_owner(rv.note)
+        edit_requests.require_version(rv, parse_if_match(request.headers.get("if-match")))
+        rv = approvals.revoke(session, rv=rv, caller=user, now=now)
+        payload, etag = serializers.edit_request(rv), rv.etag
     return serializers.json_response(payload, headers={"ETag": etag})

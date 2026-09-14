@@ -22,8 +22,8 @@ Each release is an annotated tag `v<version>` on `main`, so a frozen copy of any
   permissions (`/notes/{noteId}/shares`), comments with their own ETags (`/notes/{noteId}/comments`: readers list
   oldest first, commenters add, authors edit, owners delete), edit requests with an immutable base snapshot and a
   server-computed diff (`/notes/{noteId}/edit-requests`, `/edit-requests`, `/edit-requests/{requestId}`: submit,
-  inspect, the note list and the inbox, revise, withdraw, reject, the three-way preview, and the atomic merge),
-  co-owners and the review policy (`/notes/{noteId}/owners`, `/notes/{noteId}/owners/{userId}`,
+  inspect, the note list and the inbox, revise, withdraw, reject, the three-way preview, the atomic merge, and peer
+  approvals with `approve` and `revoke-approval`), co-owners and the review policy (`/notes/{noteId}/owners`, `/notes/{noteId}/owners/{userId}`,
   `/notes/{noteId}/review-policy`: the author adds and removes co-owners and chooses `self_merge` or
   `peer_approval`; a note with two or more owners refuses direct edits), a `notes-api purge-expired` command for an
   external scheduler, a JSON request log with `X-Request-Id`, a Schemathesis conformance run over every implemented operation, carries a

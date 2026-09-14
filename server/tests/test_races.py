@@ -1,7 +1,7 @@
 """Acceptance row "Review races": "A note edit or proposal revision after preview yields 412. Two competing
 merges cannot overwrite each other. Concurrent withdrawal/rejection versus merge permits only one transition.
 An approval and a revision racing on the same request ETag permit only one. Authorization revoked before a
-mutation commits prevents the unauthorized commit." (The approval race arrives with PR 5's endpoints.)
+mutation commits prevents the unauthorized commit."
 
 Deterministic races run the competitor inside ``uow.hooks.before_begin`` of the primary operation, in its
 own session, which proves that every check the primary makes lives inside its transaction. The
@@ -23,10 +23,23 @@ from notes_api import uow
 from notes_api.models import NoteOwner
 from tests.contract_client import ContractClient
 from tests.support import Persona
-from tests.test_edit_requests import get_request, proposal, proposer_note, reject, revise, submit, withdraw
+from tests.test_approvals import approve
+from tests.test_edit_requests import (
+    PROPOSED_BODY,
+    get_request,
+    proposal,
+    proposer_note,
+    reject,
+    revise,
+    submit,
+    withdraw,
+)
 from tests.test_merge import merge
 from tests.test_notes import CREATE_NOTE_REQUEST, me
+from tests.test_owners import owned_by, remove
 from tests.test_preview import preview, submitted_example
+from tests.test_review_policy import PEER, policy
+from tests.test_shares import share, user
 
 pytestmark = pytest.mark.acceptance("Review races")
 
@@ -281,3 +294,147 @@ def test_a_merge_and_a_revision_racing_on_one_request_etag_permit_exactly_one(
     merged_won = final["status"] == "merged" and final["explanation"] != "racing"
     revision_won = final["status"] == "open" and final["explanation"] == "racing"
     assert merged_won or revision_won, final
+
+
+# -- approvals (slice 11) ---------------------------------------------------------------------------------
+
+
+def peer_setup(
+    client: ContractClient, ada: Persona, cara: Persona, ben: Persona, *more_owners: Persona
+) -> tuple[str, str, str, str]:
+    """A peer-approval note owned by Ada and Cara (and ``more_owners``) with Ben's proposal, which needs two
+    distinct owners: note id, note ETag, request id, request ETag."""
+    note_id, etag = owned_by(client, ada, cara, *more_owners)
+    etag = policy(client, ada, note_id, etag, PEER).headers["ETag"]
+    share(client, ada, note_id, user(client, ben), "propose_edit")
+    submitted = submit(client, ben, note_id, proposal(etag))
+    assert submitted.status_code == 201 and submitted.json()["requiredApprovals"] == 2
+    return note_id, etag, str(submitted.json()["id"]), str(submitted.headers["ETag"])
+
+
+def test_a_revision_committed_first_makes_the_approval_stale(
+    client: ContractClient, app: FastAPI, ada: Persona, ben: Persona, cara: Persona, restore_hooks: None
+) -> None:
+    _, _, request_id, request_etag = peer_setup(client, ada, cara, ben)
+    competitor = ContractClient(app)
+
+    def revise_first() -> None:
+        assert (
+            revise(competitor, ben, request_id, request_etag, {"explanation": "revised"}).status_code == 200
+        )
+
+    fired = hook("approve_edit_request", revise_first)
+    stale = approve(client, cara, request_id, request_etag)
+    assert stale.status_code == 412 and fired == ["approve_edit_request"]
+    seen = get_request(client, cara, request_id).json()
+    assert (
+        seen["approvals"] == [] and seen["explanation"] == "revised"
+    )  # the proposer re-reads, Cara re-reviews
+
+
+def test_an_approval_committed_first_makes_the_revision_stale(
+    client: ContractClient, app: FastAPI, ada: Persona, ben: Persona, cara: Persona, restore_hooks: None
+) -> None:
+    _, _, request_id, request_etag = peer_setup(client, ada, cara, ben)
+    competitor = ContractClient(app)
+
+    def approve_first() -> None:
+        assert approve(competitor, cara, request_id, request_etag).status_code == 200
+
+    fired = hook("revise_edit_request", approve_first)
+    stale = revise(
+        client,
+        ben,
+        request_id,
+        request_etag,
+        {"proposedContent": {"title": "Release runbook", "body": PROPOSED_BODY}},
+    )
+    assert stale.status_code == 412 and fired == ["revise_edit_request"]
+    seen = get_request(client, cara, request_id).json()
+    assert [entry["userId"] for entry in seen["approvals"]] == [me(client, cara)]  # the approval stands
+    assert seen["proposedContent"]["title"] == "Release checklist"
+
+
+def test_an_approval_and_a_revision_racing_on_one_request_etag_permit_exactly_one(
+    client: ContractClient, app: FastAPI, ada: Persona, ben: Persona, cara: Persona
+) -> None:
+    _, _, request_id, request_etag = peer_setup(client, ada, cara, ben)
+    barrier = threading.Barrier(2)
+    outcomes: list[int] = []
+    lock = threading.Lock()
+
+    def approve_it() -> None:
+        own = ContractClient(app)
+        barrier.wait()
+        response = approve(own, cara, request_id, request_etag)
+        with lock:
+            outcomes.append(response.status_code)
+
+    def revise_it() -> None:
+        own = ContractClient(app)
+        barrier.wait()
+        response = revise(
+            own,
+            ben,
+            request_id,
+            request_etag,
+            {"proposedContent": {"title": "Release runbook", "body": PROPOSED_BODY}},
+        )
+        with lock:
+            outcomes.append(response.status_code)
+
+    threads = [threading.Thread(target=approve_it), threading.Thread(target=revise_it)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert sorted(outcomes) == [200, 412], outcomes
+    final = get_request(client, ada, request_id).json()
+    approval_won = final["proposedContent"]["title"] == "Release checklist" and len(final["approvals"]) == 1
+    revision_won = final["proposedContent"]["title"] == "Release runbook" and final["approvals"] == []
+    assert approval_won or revision_won, final
+
+
+def test_an_owner_removed_after_approving_makes_the_merge_stale_then_short_of_approvals(
+    client: ContractClient, ada: Persona, ben: Persona, cara: Persona, dan: Persona
+) -> None:
+    note_id, note_etag, request_id, request_etag = peer_setup(client, ada, cara, ben, dan)  # three owners
+    approved = approve(client, cara, request_id, request_etag)
+    assert approved.status_code == 200
+    removed = remove(client, ada, note_id, me(client, cara), note_etag)
+    assert removed.status_code == 200
+    stale = merge(
+        client, ada, request_id, approved.headers["ETag"], {"expectedNoteETag": removed.headers["ETag"]}
+    )
+    assert stale.status_code == 412  # the removal deleted Cara's approval and moved the request's version
+    current = get_request(client, ada, request_id)
+    assert current.json()["approvals"] == [] and current.json()["requiredApprovals"] == 2
+    short = merge(
+        client, ada, request_id, current.headers["ETag"], {"expectedNoteETag": removed.headers["ETag"]}
+    )
+    assert short.status_code == 409 and short.json()["code"] == "approval_required"
+    dans = approve(client, dan, request_id, current.headers["ETag"])
+    landed = merge(
+        client, ada, request_id, dans.headers["ETag"], {"expectedNoteETag": removed.headers["ETag"]}
+    )
+    assert landed.status_code == 200, landed.text
+    assert [entry["userId"] for entry in landed.json()["editRequest"]["approvals"]] == [me(client, dan)]
+
+
+def test_an_approval_committed_before_a_merge_that_needed_it_makes_the_merge_stale_then_lands(
+    client: ContractClient, app: FastAPI, ada: Persona, ben: Persona, cara: Persona, restore_hooks: None
+) -> None:
+    _, note_etag, request_id, request_etag = peer_setup(client, ada, cara, ben)
+    competitor = ContractClient(app)
+    approved: dict[str, str] = {}
+
+    def approve_first() -> None:
+        response = approve(competitor, cara, request_id, request_etag)
+        assert response.status_code == 200
+        approved["etag"] = response.headers["ETag"]
+
+    fired = hook("merge_edit_request", approve_first)
+    stale = merge(client, ada, request_id, request_etag, {"expectedNoteETag": note_etag})
+    assert stale.status_code == 412 and fired == ["merge_edit_request"]
+    landed = merge(client, ada, request_id, approved["etag"], {"expectedNoteETag": note_etag})
+    assert landed.status_code == 200, landed.text  # Cara's approval plus Ada as the merger make two

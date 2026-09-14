@@ -74,6 +74,8 @@ OPERATIONS = [
     "addOwner",
     "removeOwner",
     "updateReviewPolicy",
+    "approveEditRequest",
+    "revokeEditRequestApproval",
 ]
 EXCLUDED_CHECKS = ["positive_data_acceptance", "ignored_auth"]
 MISSING_HEADER_STATUSES = ["400", "401", "403", "406", "415", "422", "428"]

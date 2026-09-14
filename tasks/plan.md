@@ -296,6 +296,8 @@ Verify: `tests/test_review_policy.py` tagged `acceptance("Protected notes")`. De
 
 ### Slice 11: approvals and peer approval (PR 5b)
 
+(Amended 2026-09-14: the two actions live in `services/approvals.py` next to the deletion an owner's removal performs; the proposer's `403` is checked before ownership, with the contract's self-approval detail for approve and the default for revoke; T11.2's counting and freezing were already proven in PR 4c with seeded rows, so this slice adds the endpoints, the races, and the "Protect a note" flow, whose comment step waits for slice 12.)
+
 **T11.1 Approve and revoke-approval (M).** Both: inspect right else `404`, owner else `403`, proposer `403` with the self-approval detail, request `If-Match`, closed `409 request_not_open`, trashed `409 note_not_active`, note lock then request lock. Approve inserts or no-ops; revoke deletes or no-ops; effective changes bump version and `updatedAt`.
 AC: approving twice returns an identical ETag and one approval, and revoking a missing approval is a no-op; approvals are recorded on a `self_merge` note and on a single-owner note; approve versus revise racing on the same request ETag has exactly one winner (hook and thread tests).
 Verify: `tests/test_approvals.py` tagged `acceptance("Approvals")`. Deps: T10.2. Files: `services/approvals.py`, `routers/edit_requests.py`.
