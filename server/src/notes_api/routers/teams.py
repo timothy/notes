@@ -1,4 +1,8 @@
-"""Teams and memberships: nine operations, all unconditional (no ETag), all behind the team lock."""
+"""Teams and memberships: nine operations, all unconditional (no ETag), all behind the team lock.
+
+Bodies are parsed before the transaction (the ladder is 401, request shape, then 404 and 403), so no lock
+is held while a body is read and a schema error reveals nothing about the team.
+"""
 
 from __future__ import annotations
 
@@ -57,9 +61,9 @@ def get_team(user: CurrentUser, request: Request, teamId: uuid.UUID) -> JSONResp
 
 
 def update_team(user: CurrentUser, request: Request, teamId: uuid.UUID) -> JSONResponse:
+    body = parse_body(request, "UpdateTeam")
     with sessions(request)() as session, uow.transaction(session, "update_team"):
         team = teams.lock_team_as_admin(session, caller=user, team_id=teamId)
-        body = parse_body(request, "UpdateTeam")
         payload = serializers.team(
             teams.rename_team(session, team=team, name=body["name"], clock=clock(request))
         )
@@ -83,9 +87,9 @@ def list_memberships(
 
 
 def add_membership(user: CurrentUser, request: Request, teamId: uuid.UUID) -> JSONResponse:
+    body = parse_body(request, "AddMembership")
     with sessions(request)() as session, uow.transaction(session, "add_membership"):
         team = teams.lock_team_as_admin(session, caller=user, team_id=teamId)
-        body = parse_body(request, "AddMembership")
         membership = teams.add_member(
             session,
             team=team,
@@ -101,9 +105,9 @@ def add_membership(user: CurrentUser, request: Request, teamId: uuid.UUID) -> JS
 def update_membership(
     user: CurrentUser, request: Request, teamId: uuid.UUID, userId: uuid.UUID
 ) -> JSONResponse:
+    body = parse_body(request, "UpdateMembership")
     with sessions(request)() as session, uow.transaction(session, "update_membership"):
         team = teams.lock_team_as_admin(session, caller=user, team_id=teamId)
-        body = parse_body(request, "UpdateMembership")
         membership = teams.set_role(
             session, team=team, user_id=userId, role=body["role"], clock=clock(request)
         )
