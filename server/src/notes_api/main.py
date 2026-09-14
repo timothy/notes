@@ -10,6 +10,7 @@ from __future__ import annotations
 from fastapi import FastAPI
 
 from notes_api import CONTRACT_VERSION
+from notes_api.auth.jwt import TokenVerifier
 from notes_api.clock import Clock, SystemClock
 from notes_api.config import Settings, load_settings
 from notes_api.contract import load_contract
@@ -29,6 +30,7 @@ def create_app(settings: Settings | None = None, clock: Clock | None = None) -> 
     app.state.engine = make_engine(settings.database_url)
     app.state.session_factory = make_session_factory(app.state.engine)
     app.state.clock = clock or SystemClock()
+    app.state.verifier = TokenVerifier(settings)
     app.add_middleware(NoStoreMiddleware)
     install_problem_handlers(app)
     install_health_routes(app)

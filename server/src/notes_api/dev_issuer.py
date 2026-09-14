@@ -95,7 +95,11 @@ class DevIssuer:
         extra_claims: Mapping[str, Any] | None = None,
         headers: Mapping[str, Any] | None = None,
     ) -> str:
-        """An RS256 access token. ``extra_claims`` and ``headers`` override the defaults claim by claim."""
+        """An RS256 access token.
+
+        ``extra_claims`` and ``headers`` override the defaults entry by entry; a value of None removes the
+        claim or header, so tests can mint tokens that lack one.
+        """
         now = issued_at or datetime.now(UTC)
         claims: dict[str, Any] = {
             "iss": self.issuer,
@@ -109,6 +113,8 @@ class DevIssuer:
         claims.update(extra_claims or {})
         token_headers: dict[str, Any] = {"kid": self.key_id, "typ": ACCESS_TOKEN_TYPE}
         token_headers.update(headers or {})
+        claims = {name: value for name, value in claims.items() if value is not None}
+        token_headers = {name: value for name, value in token_headers.items() if value is not None}
         return jwt.encode(claims, self._private_key, algorithm="RS256", headers=token_headers)
 
     def private_key_b64(self) -> str:
