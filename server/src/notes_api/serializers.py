@@ -13,7 +13,7 @@ from typing import Any
 
 from fastapi.responses import JSONResponse
 
-from notes_api.models import Membership, Note, Team, User
+from notes_api.models import Membership, Note, Share, Team, User
 from notes_api.services.permissions import Access
 
 TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%S.%fZ"
@@ -86,3 +86,24 @@ def note(row: Note, owner_ids: list[uuid.UUID], tags: list[str], access: Access)
 def note_summary(row: Note, owner_ids: list[uuid.UUID], tags: list[str], access: Access) -> dict[str, Any]:
     """A ``NoteSummary``: the note without its body, as list operations return it."""
     return _note_fields(row, owner_ids, tags, access)
+
+
+def share_permissions(row: Share) -> list[str]:
+    """The canonical ``PermissionSet`` of a share: ``read`` always, then the granted flags in order."""
+    granted = ["read"]
+    if row.can_comment:
+        granted.append("comment")
+    if row.can_propose:
+        granted.append("propose_edit")
+    return granted
+
+
+def share(row: Share) -> dict[str, Any]:
+    return {
+        "id": str(row.id),
+        "noteId": str(row.note_id),
+        "recipient": {"type": row.recipient_type, "id": str(row.recipient_id)},
+        "permissions": share_permissions(row),
+        "createdAt": timestamp(row.created_at),
+        "updatedAt": timestamp(row.updated_at),
+    }

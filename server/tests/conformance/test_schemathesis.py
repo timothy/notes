@@ -48,6 +48,11 @@ OPERATIONS = [
     "updateNote",
     "trashNote",
     "restoreNote",
+    "listShares",
+    "createShare",
+    "getShare",
+    "updateShare",
+    "deleteShare",
 ]
 EXCLUDED_CHECKS = ["positive_data_acceptance", "ignored_auth"]
 MISSING_HEADER_STATUSES = ["400", "401", "403", "406", "415", "422", "428"]
@@ -66,11 +71,22 @@ def conformance_schema(
         client.post(f"/v1/teams/{team['id']}/members", auth=ada, json={"userId": ben_id}).status_code == 201
     )
 
+    share = client.post(
+        f"/v1/notes/{note['id']}/shares",
+        auth=ada,
+        json={"recipient": {"type": "user", "id": ben_id}, "permissions": ["comment"]},
+    ).json()
+
     schema = schemathesis.openapi.from_dict(RAW)
     schema.app = app  # the document's server path "/v1" is kept; the ASGI transport supplies the host
     schema.config.update(
         headers=ada.headers,
-        parameters={"path.noteId": note["id"], "path.teamId": team["id"], "path.userId": ben_id},
+        parameters={
+            "path.noteId": note["id"],
+            "path.teamId": team["id"],
+            "path.userId": ben_id,
+            "path.shareId": share["id"],
+        },
     )
     schema.config.generation.update(with_security_parameters=False)
     schema.config.checks.update(excluded_check_names=EXCLUDED_CHECKS)

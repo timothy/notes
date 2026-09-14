@@ -104,10 +104,15 @@ Where the contract leaves a choice, the server's choice is fixed by a test and l
 - `GET /notes/{noteId}` never returns `403`: a note the caller cannot read is `404`, a trashed note is visible to its owners only, and an expired note to nobody.
 - Trash and restore: a repeated `DELETE` with the trash ETag is `204` with the same ETag and never extends the recovery period; the version check (`412`) precedes both the idempotent repeat and the lifecycle check, so a stale ETag is `412` even on a trashed note. `POST /notes/{noteId}/restore` ignores any request body and content type. At `expiresAt` exactly, reads, restore, and repeated trash are `404`.
 - `GET /notes`: a repeated `q` parameter and duplicate `tag` values are `422` naming the parameter; the cursor is bound to every filter, so continuing with a changed filter is `400 invalid_cursor`; `scope=shared&state=trashed` and `teamId` with `state=trashed` are empty pages from the same query, not special cases.
+- Shares on a trashed note: creating one is `409 note_not_active`; because trashing deleted every share, the owner's list is an empty page and `GET`, `PATCH`, and `DELETE` of a former share are `404`. A share reached through another note's path is `404`. A `PATCH` that leaves the permission set unchanged keeps `updatedAt`.
 - No string in a request body or in the `q` and `tag` query parameters may contain U+0000: it is `422` at the field's pointer with detail `must not contain NUL characters`, the one rule the server adds beyond the schemas, because PostgreSQL text cannot store it (found by the conformance run); for query parameters the detail is the same and the location is `query`.
 - A `PATCH /notes/{noteId}` that changes nothing returns the existing representation and ETag with `updatedAt` unchanged. The version check (`412`) precedes the lifecycle check (`409`), so a stale ETag on a trashed note is `412`.
 - A team's mutations lock the team row first, so two admins demoting or removing each other, or the last admin leaving twice, are decided one at a time: the second attempt is `409 last_admin` when it would leave no admin, or `403` when the first attempt already took the caller's admin role.
 - Search folds with `casefold()` and does not NFC-normalize (from slice 5).
+
+### Notes, permissions, and shares
+
+Only owners (the author and any co-owners) may change a note, manage its shares, trash and restore it. Anyone else holds the union of their direct share and the shares addressed to teams they currently belong to: `read` is implied by any share, `comment` and `propose_edit` come from the share. Team roles grant nothing beyond the share. Every note representation reports the caller's own `effectivePermissions` in canonical order and an `isOwner` flag. A share's recipient must exist and must not already own the note (`422` at `/recipient/id`); a second share for the same recipient is `409 duplicate_share`; shares carry no ETag, change nothing about the note, and vanish when the note is trashed.
 
 ### Purging expired notes
 

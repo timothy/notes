@@ -69,10 +69,10 @@ Checklist for `tasks/plan.md` (approved 2026-09-13). Each task's full descriptio
 
 ## PR 3c: slice 6 (shares and access paths)
 
-- [ ] T6.1 Shares CRUD (M) — deps: T5.2b.
-- [ ] T6.2 Overlapping grants, revocation, isolation, and the section 5 "Create and share" flow (M) — deps: T6.1.
-- [ ] T6.3 Docs and bookkeeping (S) — deps: T6.2.
-- [ ] Checkpoint G
+- [x] T6.1 Shares CRUD (M) — deps: T5.2b. AC: implied `read` and canonical order; `422 /recipient/id` for owners and unknown recipients; `409 duplicate_share`; trashed note `409` on create and `404` otherwise; wrong nesting `404`; readers `403`, strangers `404`; the note's ETag untouched.
+- [x] T6.2 Overlapping grants, revocation, isolation, and the section 5 "Create and share" flow (M) — deps: T6.1. AC: direct and team paths survive each other's removal; the last read path hides the note; team admins gain nothing; lists and nested ids reveal only authorized entries; the flow runs with the contract's example payloads.
+- [x] T6.3 Docs and bookkeeping (S) — deps: T6.2.
+- [x] Checkpoint G: all four workflows green on PR #16 (2026-09-14); the "Create and share" flow passes end to end
 
 ## PR 4: slices 7, 8, and 9
 
