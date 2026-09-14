@@ -88,7 +88,7 @@ Checklist for `tasks/plan.md` (approved 2026-09-13). Each task's full descriptio
 - [x] T8.3 Note-scoped list and inbox (M) — deps: T8.2. AC: owners list everything, proposers their own, other readers an empty page, non-readers `404`; `status` selects one status and defaults to `open`; `incoming` and `outgoing` partition, an owner's own proposal appears in both; `outgoing` needs current read; `state=trashed` is owner-visible only; expired notes vanish; summaries carry the live title; ties page by id; revocation between pages hides requests; parameters are validated; a page costs at most nine statements.
 - [x] T8.4 Revise, withdraw, reject (M) — deps: T8.3. AC: the contract's revision advances the ETag and recomputes the diff; explanation-only revisions keep seeded approvals and content changes delete them; an identical resubmission is a no-op; the body is validated before the precondition; a read-only proposer withdraws `200` and revises `403`, a proposer without read withdraws `404`, an owner who did not propose gets `403` on revise and withdraw and `200` on reject, an owner-proposer may do both; optional bodies on reject and none on withdraw; closing freezes `requiredApprovals` and closed records answer `412` to the old ETag and `409 request_not_open` to the current one, before `note_not_active`; a competing withdrawal makes the rejection `412`; the conformance run covers the seven operations.
 - [x] T8.5 Docs, the "Submit and discover" flow, and bookkeeping (S) — deps: T8.4.
-- [ ] Checkpoint I: all four workflows green on the PR; the "Submit and discover" flow passes
+- [x] Checkpoint I: all four workflows green on PR #18 (2026-09-14); the "Submit and discover" flow passes
 
 ## PR 4c: slice 9 (preview and merge)
 
