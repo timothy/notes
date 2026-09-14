@@ -20,3 +20,10 @@ API_PREFIX = "/v1"
 def add_route(app: FastAPI, method: str, path: str, endpoint: Callable[..., Any]) -> None:
     """Register one operation at ``/v1`` + ``path`` for one HTTP method."""
     app.add_api_route(API_PREFIX + path, endpoint, methods=[method])
+
+
+def install_routes(app: FastAPI) -> None:
+    """Register every implemented operation; the list grows with each slice."""
+    from notes_api.routers import users
+
+    users.install_user_routes(app)

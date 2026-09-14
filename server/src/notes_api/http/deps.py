@@ -1,18 +1,22 @@
 """Request-scoped dependencies: who is calling.
 
-``bearer_identity`` is the first rung of every operation's check ladder. FastAPI resolves dependencies
-before it validates path and query parameters, so a missing or invalid token is ``401`` even when the
-rest of the request is malformed.
+``current_user`` is the first rung of every operation's check ladder: it verifies the bearer token and
+maps the identity to a local user, provisioning one on first contact. FastAPI resolves dependencies before
+it validates path and query parameters, so a missing or invalid token is ``401`` even when the rest of the
+request is malformed.
 """
 
 from __future__ import annotations
 
 import logging
+from typing import Annotated
 
-from fastapi import Request
+from fastapi import Depends, Request
 
 from notes_api.auth.jwt import Identity, InvalidToken, TokenVerifier
+from notes_api.auth.provisioning import get_or_create_user
 from notes_api.http.problems import Unauthenticated
+from notes_api.models import User
 
 log = logging.getLogger(__name__)
 
@@ -42,3 +46,12 @@ def bearer_identity(request: Request) -> Identity:
     except InvalidToken as exc:
         log.info("rejected bearer token: %s", exc)
         raise Unauthenticated(token_present=True, detail=INVALID_TOKEN_DETAIL) from None
+
+
+def current_user(request: Request) -> User:
+    """The local user behind the bearer token, provisioned on first contact."""
+    identity = bearer_identity(request)
+    return get_or_create_user(request.app.state.session_factory, identity, request.app.state.clock)
+
+
+CurrentUser = Annotated[User, Depends(current_user)]

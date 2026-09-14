@@ -22,7 +22,7 @@ from jwt.algorithms import ECAlgorithm
 from notes_api.auth.jwt import Identity, InvalidToken, TokenVerifier, display_name_from
 from notes_api.config import ConfigurationError
 from notes_api.http.deps import INVALID_TOKEN_DETAIL, MISSING_TOKEN_DETAIL, bearer_identity
-from notes_api.main import create_app
+from notes_api.main import create_app, create_base_app
 from notes_api.routers import add_route
 from notes_api.serializers import json_response
 from tests.contract_client import ContractClient
@@ -49,7 +49,8 @@ def members(
 
 
 def stub_app(issuer: LocalIssuer, **overrides: Any) -> FastAPI:
-    app = create_app(settings_for("sqlite://", issuer, **overrides))
+    """The base app (no real operations) with two stand-ins that only authenticate."""
+    app = create_base_app(settings_for("sqlite://", issuer, **overrides))
     add_route(app, "GET", "/me", whoami)
     add_route(app, "GET", "/teams/{teamId}/members", members)
     return app

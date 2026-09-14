@@ -16,6 +16,7 @@ import pytest
 from fastapi import FastAPI
 from sqlalchemy import Engine
 
+from notes_api import uow
 from notes_api.config import Settings
 from notes_api.main import create_app
 from notes_api.models import Base
@@ -77,3 +78,11 @@ def cara(issuer: LocalIssuer) -> Persona:
 @pytest.fixture(scope="session")
 def dan(issuer: LocalIssuer) -> Persona:
     return issuer.persona("dan", "Dan Whitfield")
+
+
+@pytest.fixture
+def restore_hooks() -> Iterator[None]:
+    """Let a test replace ``uow.hooks.before_begin`` and put the no-op back afterwards."""
+    original = uow.hooks.before_begin
+    yield
+    uow.hooks.before_begin = original

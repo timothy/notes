@@ -18,9 +18,21 @@ from notes_api.db import make_engine, make_session_factory
 from notes_api.http.health import install_health_routes
 from notes_api.http.middleware import NoStoreMiddleware
 from notes_api.http.problems import install_problem_handlers
+from notes_api.routers import install_routes
 
 
 def create_app(settings: Settings | None = None, clock: Clock | None = None) -> FastAPI:
+    """The server: the base application plus every implemented operation."""
+    app = create_base_app(settings, clock)
+    install_routes(app)
+    return app
+
+
+def create_base_app(settings: Settings | None = None, clock: Clock | None = None) -> FastAPI:
+    """Everything but the contract's operations: state, middleware, error handlers, and the probes.
+
+    The harness tests build on this so they can register stand-in routes at contract paths.
+    """
     settings = settings or load_settings()
     app = FastAPI(
         title="Notes API", version=CONTRACT_VERSION, openapi_url=None, docs_url=None, redoc_url=None
