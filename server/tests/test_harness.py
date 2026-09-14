@@ -6,11 +6,12 @@ from typing import Any
 
 import jwt
 import pytest
-from fastapi import FastAPI, Response
+from fastapi import APIRouter, FastAPI, Response
 from fastapi.responses import JSONResponse
 
 from notes_api.contract import Contract
 from notes_api.main import create_app
+from notes_api.routers import add_route
 from tests.contract_client import ContractClient, ContractViolation
 from tests.support import FakeClock, LocalIssuer, settings_for
 
@@ -123,6 +124,23 @@ def test_unknown_routes_must_answer_with_the_404_problem() -> None:
     extra = ContractClient(stub_app("/v1/extra", ["GET"], lambda: {"ok": True}))
     with pytest.raises(ContractViolation, match="not in the contract"):
         extra.get("/v1/extra")
+
+
+def test_routes_registered_through_include_router_are_rejected() -> None:
+    """FastAPI 0.141 hides included routes behind a private route object, so the client refuses them."""
+    app = create_app(settings_for("sqlite://"))
+    router = APIRouter()
+    router.add_api_route("/me", lambda: {"id": 1}, methods=["GET"])
+    app.include_router(router, prefix="/v1")
+    with pytest.raises(ContractViolation, match="include_router"):
+        ContractClient(app).get("/v1/me")
+
+
+def test_the_route_helper_registers_routes_the_client_can_see() -> None:
+    app = create_app(settings_for("sqlite://"))
+    add_route(app, "GET", "/extra", lambda: {"ok": True})
+    with pytest.raises(ContractViolation, match="GET /v1/extra is not in the contract"):
+        ContractClient(app).get("/v1/extra")
 
 
 def test_the_issuer_mints_verifiable_tokens_for_distinct_personas() -> None:
