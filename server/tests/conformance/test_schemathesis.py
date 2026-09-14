@@ -3,10 +3,11 @@
 Schemathesis generates requests from the contract, valid and deliberately invalid, and checks that each
 response is a declared status with the declared headers, media type, and body schema. The include list
 grows one slice at a time; an id that matches nothing fails the run loudly. One note, one team, one
-membership, one share, and one comment are seeded so that path parameters point at real resources and the
-2xx, 409, and 412 branches are reached as well as the 404s. Every operation runs as a subtest over that one
-database in document order; nothing a generated request can do closes or removes the seeded rows, because
-the conditional mutations need an ``If-Match`` equal to a stored version and the generated values never are.
+membership, one share, one comment, and one open edit request are seeded so that path parameters point at
+real resources and the 2xx, 409, and 412 branches are reached as well as the 404s. Every operation runs
+as a subtest over that one database in document order; nothing a generated request can do closes or
+removes the seeded rows, because the conditional mutations need an ``If-Match`` equal to a stored version
+and the generated values never are.
 
 Two checks are excluded on purpose: ``positive_data_acceptance`` rejects the ladder's own 400, 412, 422,
 and 428 answers to schema-valid but semantically wrong input, and ``ignored_auth`` triples every 2xx to
@@ -60,6 +61,13 @@ OPERATIONS = [
     "getComment",
     "updateComment",
     "deleteComment",
+    "createEditRequest",
+    "listNoteEditRequests",
+    "listEditRequests",
+    "getEditRequest",
+    "reviseEditRequest",
+    "withdrawEditRequest",
+    "rejectEditRequest",
 ]
 EXCLUDED_CHECKS = ["positive_data_acceptance", "ignored_auth"]
 MISSING_HEADER_STATUSES = ["400", "401", "403", "406", "415", "422", "428"]
@@ -71,7 +79,8 @@ RAW: dict[str, Any] = yaml.safe_load(Path(DEFAULT_CONTRACT_PATH).read_text(encod
 def conformance_schema(
     app: FastAPI, client: ContractClient, ada: Persona, ben: Persona
 ) -> schemathesis.BaseSchema:
-    note = client.post("/v1/notes", auth=ada, json={"title": "Conformance seed", "tags": ["seed"]}).json()
+    created = client.post("/v1/notes", auth=ada, json={"title": "Conformance seed", "tags": ["seed"]})
+    note = created.json()
     team = client.post("/v1/teams", auth=ada, json={"name": "Conformance"}).json()
     ben_id = client.get("/v1/me", auth=ben).json()["id"]
     assert (
@@ -81,10 +90,18 @@ def conformance_schema(
     share = client.post(
         f"/v1/notes/{note['id']}/shares",
         auth=ada,
-        json={"recipient": {"type": "user", "id": ben_id}, "permissions": ["comment"]},
+        json={"recipient": {"type": "user", "id": ben_id}, "permissions": ["comment", "propose_edit"]},
     ).json()
     comment = client.post(
         f"/v1/notes/{note['id']}/comments", auth=ada, json={"body": "Conformance seed comment"}
+    ).json()
+    edit_request = client.post(
+        f"/v1/notes/{note['id']}/edit-requests",
+        auth=ben,
+        json={
+            "baseNoteETag": created.headers["ETag"],
+            "proposedContent": {"title": "Conformance seed", "body": "A proposed body.\n"},
+        },
     ).json()
 
     schema = schemathesis.openapi.from_dict(RAW)
@@ -97,6 +114,7 @@ def conformance_schema(
             "path.userId": ben_id,
             "path.shareId": share["id"],
             "path.commentId": comment["id"],
+            "path.requestId": edit_request["id"],
         },
     )
     schema.config.generation.update(with_security_parameters=False)

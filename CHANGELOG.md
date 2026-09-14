@@ -20,8 +20,10 @@ Each release is an annotated tag `v<version>` on `main`, so a frozen copy of any
   `GET/PATCH/DELETE /notes/{noteId}`, `POST /notes/{noteId}/restore`: create, read, conditional update, trash with a
   30-day recovery window, restore, list and search), shares to users and teams with implied `read` and canonical
   permissions (`/notes/{noteId}/shares`), comments with their own ETags (`/notes/{noteId}/comments`: readers list
-  oldest first, commenters add, authors edit, owners delete), a `notes-api purge-expired` command for an external
-  scheduler, a JSON request log with `X-Request-Id`, a Schemathesis conformance run over every implemented operation, carries a
+  oldest first, commenters add, authors edit, owners delete), edit requests with an immutable base snapshot and a
+  server-computed diff (`/notes/{noteId}/edit-requests`, `/edit-requests`, `/edit-requests/{requestId}`: submit,
+  inspect, the note list and the inbox, revise, withdraw, reject; preview and merge follow), a `notes-api
+  purge-expired` command for an external scheduler, a JSON request log with `X-Request-Id`, a Schemathesis conformance run over every implemented operation, carries a
   development token issuer
   (`python -m notes_api.dev_issuer`) for the compose stack and the smoke test, and answers `GET /healthz` and
   `GET /readyz` outside the contract for container probes. No contract change.

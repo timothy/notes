@@ -5,21 +5,9 @@ from __future__ import annotations
 import copy
 from typing import Any
 
-import pytest
-
-from notes_api.contract import Contract
 from tests.contract_client import ContractClient
 from tests.support import Persona
 from tests.test_notes import me
-
-
-@pytest.fixture(scope="module")
-def examples() -> dict[str, Any]:
-    document = Contract.load().document
-    values: dict[str, Any] = {
-        name: example["value"] for name, example in document["components"]["examples"].items()
-    }
-    return values
 
 
 def test_create_and_share(
@@ -81,3 +69,55 @@ def test_create_and_share(
     # Sharing and commenting changed nothing about the note itself.
     unchanged = client.get(f"/v1/notes/{note_id}", auth=ada)
     assert unchanged.headers["ETag"] == etag and unchanged.json()["updatedAt"] == created.json()["updatedAt"]
+
+
+GUIDE_DIFF = (
+    "--- base/body\n"
+    "+++ proposed/body\n"
+    "@@ -1,4 +1,5 @@\n"
+    " ## Release\n"
+    " \n"
+    " - Run tests\n"
+    "+- Review metrics\n"
+    " - Deploy\n"
+)
+
+
+def test_submit_and_discover_an_edit_request(
+    client: ContractClient, examples: dict[str, Any], ada: Persona, ben: Persona
+) -> None:
+    """Section 5, "Submit and discover an edit request": the proposer submits against the note's ETag, the
+    note is unchanged, and the owner finds the request in the inbox and reads its diff, the guide's diff."""
+    created = client.post("/v1/notes", auth=ada, json=examples["CreateNoteRequest"])
+    note_id, note_etag = created.json()["id"], created.headers["ETag"]
+    grant = copy.deepcopy(examples["CreateShareRequest"])
+    grant["recipient"]["id"] = me(client, ben)
+    assert client.post(f"/v1/notes/{note_id}/shares", auth=ada, json=grant).status_code == 201
+
+    # 1. After reading the note and its ETag, the proposer sends the example with that ETag.
+    submission = copy.deepcopy(examples["CreateEditRequestRequest"])
+    submission["baseNoteETag"] = client.get(f"/v1/notes/{note_id}", auth=ben).headers["ETag"]
+    submitted = client.post(f"/v1/notes/{note_id}/edit-requests", auth=ben, json=submission)
+    assert submitted.status_code == 201, submitted.text
+    request_id, request_etag = submitted.json()["id"], submitted.headers["ETag"]
+    assert submitted.headers["Location"] == f"/v1/edit-requests/{request_id}"
+    assert submitted.json()["status"] == "open" and submitted.json()["requiredApprovals"] == 0
+    # The live note still has its ETag and its original body.
+    live = client.get(f"/v1/notes/{note_id}", auth=ada)
+    assert live.headers["ETag"] == note_etag and live.json()["body"] == examples["CreateNoteRequest"]["body"]
+
+    # 2. The owner polls the inbox, then reads the individual request.
+    inbox = client.get(
+        "/v1/edit-requests", auth=ada, params={"view": "incoming", "status": "open", "state": "active"}
+    )
+    assert inbox.status_code == 200
+    assert [item["id"] for item in inbox.json()["items"]] == [request_id]
+    assert inbox.json()["items"][0]["noteTitle"] == "Release checklist"
+    detail = client.get(f"/v1/edit-requests/{request_id}", auth=ada)
+    assert detail.status_code == 200 and detail.headers["ETag"] == request_etag
+    assert detail.json()["proposalDiff"] == {"title": "", "body": GUIDE_DIFF}
+    assert detail.json()["proposalDiff"] == examples["EditRequestOpen"]["proposalDiff"]
+    assert detail.json()["baseContent"]["body"] == examples["CreateNoteRequest"]["body"]
+    assert detail.json()["proposedContent"] == submission["proposedContent"]
+    # The proposer sees the same request; another reader of the note would not.
+    assert client.get(f"/v1/edit-requests/{request_id}", auth=ben).json() == detail.json()

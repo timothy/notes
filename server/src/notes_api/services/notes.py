@@ -71,7 +71,7 @@ def create(
 
 def read(session: Session, *, caller: User, note_id: uuid.UUID, now: datetime) -> NoteView:
     """The note as the caller sees it; ``404`` when missing, hidden, trashed for a reader, or expired."""
-    return _visible_view(session, session.get(Note, note_id), caller, now)
+    return view_of(session, session.get(Note, note_id), caller, now)
 
 
 def lock(
@@ -85,7 +85,7 @@ def lock(
     """
     statement = select(Note).where(Note.id == note_id).with_for_update()
     note = session.execute(statement).scalar_one_or_none()
-    return _visible_view(session, note, caller, now, lock_access=lock_access)
+    return view_of(session, note, caller, now, lock_access=lock_access)
 
 
 def require_owner(view: NoteView) -> None:
@@ -188,20 +188,7 @@ def list_notes(
     body; each ``tag`` must be present; ``teamId`` requires a share to that team and grants nothing.
     """
     _check_filters(filters)
-    owner_row = select(NoteOwner.note_id).where(NoteOwner.note_id == Note.id, NoteOwner.user_id == caller.id)
-    direct_share = select(Share.id).where(
-        Share.note_id == Note.id, Share.recipient_type == permissions.USER, Share.recipient_id == caller.id
-    )
-    team_share = (
-        select(Share.id)
-        .join(Membership, Membership.team_id == Share.recipient_id)
-        .where(
-            Share.note_id == Note.id,
-            Share.recipient_type == permissions.TEAM,
-            Membership.user_id == caller.id,
-        )
-    )
-    owned, readable = owner_row.exists(), or_(owner_row.exists(), direct_share.exists(), team_share.exists())
+    owned, readable = permissions.access_predicates(caller.id)
 
     statement = select(Note)
     if filters.state == "trashed":
@@ -339,9 +326,14 @@ def _tag_rows(note_id: uuid.UUID, tags: list[str]) -> list[NoteTag]:
     return [NoteTag(note_id=note_id, position=position, tag=tag) for position, tag in enumerate(tags)]
 
 
-def _visible_view(
+def view_of(
     session: Session, note: Note | None, caller: User, now: datetime, *, lock_access: bool = False
 ) -> NoteView:
+    """The note as ``caller`` sees it; ``404`` when there is no such note or it is invisible to them.
+
+    Expired notes are invisible to everyone and trashed notes to non-owners. Services that already hold a
+    ``Note`` row (a request read together with its note) build their view here instead of re-reading it.
+    """
     if note is None:
         raise NotFound()
     access = permissions.resolve(session, note.id, caller.id, lock=lock_access)

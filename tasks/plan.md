@@ -103,6 +103,7 @@ Check ladder, in order: `401`; request shape (`415`, `400 malformed_request`, `4
 - Request strings may not contain U+0000 (`422` at the field's pointer); PostgreSQL text cannot store it. Added 2026-09-14 after the Schemathesis run produced a 500 on PostgreSQL.
 - Search folds with `casefold()` and does not NFC-normalize.
 - Comments (added 2026-09-14): an identical-body `PATCH` is a `200` no-op; a comment reached through another note's path is `404` before any `403`; owners of a trashed note read its comments, and every comment mutation on a trashed note is `409 note_not_active` after the `412` check.
+- Edit requests (added 2026-09-14): `412` precedes both lifecycle `409`s and `request_not_open` precedes `note_not_active`; every version mismatch carries a detail naming the input; an owner who proposed may withdraw and reject their own request while an owner who did not propose gets `403` on withdraw; owners list and read a trashed note's requests; `withdrawEditRequest` never reads the body; a reader who is neither owner nor proposer gets an empty note-scoped page; a revision's content change means the stored proposal differs afterwards, an identical resubmission keeps the ETag, and `explanation: ""` is stored; reject treats an empty body as omitted and a JSON `null` body as `422` at `""`.
 
 ## Task list
 
@@ -239,6 +240,8 @@ Verify: `tests/test_comments.py`. Deps: T7.1. Files: same.
 **Checkpoint H.**
 
 ### Slice 8: edit requests: submit, inspect, list, revise, withdraw, reject (PR 4b)
+
+(Amended 2026-09-14: request-scoped mutations read the request's `note_id` as a Core scalar, lock the note with the caller's access rows, then load the request for the first time under `FOR UPDATE` with `populate_existing`, because a row loaded before the lock keeps stale attributes on PostgreSQL even after a later locking select; reads take the request and its note in one joined select; `permissions.access_predicates` serves `list_notes` and the inbox alike; the effective `requiredApprovals` formula, the approvals, and the value frozen at close are wired in this slice so that slice 11 adds only the approve and revoke endpoints. Interpretations: `412` before `409 request_not_open` before `409 note_not_active`; an owner-proposer may withdraw and reject; `withdrawEditRequest` never reads the body; a content change means the stored proposal differs afterwards; `explanation: ""` is stored.)
 
 **T8.1 POST /notes/{noteId}/edit-requests (M).** Lock note and permission rows; `propose_edit` else `403`; `baseNoteETag` versus version is `412` creating nothing; trashed `409`; proposed equal to the base is `422 /proposedContent`; base captured from the row; `201` with the flat `Location` and the request ETag; note untouched.
 AC: note ETag and `updatedAt` unchanged after submission; a stale base is `412` with zero rows written; an owner may submit on their own note, and `baseContent` or `tags` in the body is `422 unknown field`.

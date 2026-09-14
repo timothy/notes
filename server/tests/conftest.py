@@ -11,6 +11,7 @@ import os
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import pytest
 from fastapi import FastAPI
@@ -18,6 +19,7 @@ from sqlalchemy import Engine
 
 from notes_api import uow
 from notes_api.config import Settings
+from notes_api.contract import Contract
 from notes_api.main import create_app
 from notes_api.models import Base
 from tests.contract_client import ContractClient
@@ -29,6 +31,16 @@ START = datetime(2026, 9, 13, 12, 0, tzinfo=UTC)
 @pytest.fixture(scope="session")
 def issuer() -> LocalIssuer:
     return LocalIssuer()
+
+
+@pytest.fixture(scope="session")
+def examples() -> dict[str, Any]:
+    """The contract's named examples by name, the byte-exact fixtures of the flow and diff tests."""
+    document = Contract.load().document
+    values: dict[str, Any] = {
+        name: example["value"] for name, example in document["components"]["examples"].items()
+    }
+    return values
 
 
 @pytest.fixture
