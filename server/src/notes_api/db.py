@@ -8,7 +8,8 @@ digits keep lexical order chronological), and always returns aware UTC.
 the first write, so a read followed by a write holds no lock in between; the engine therefore disables
 that behavior and emits ``BEGIN IMMEDIATE`` itself when SQLAlchemy starts a transaction, turns on WAL and
 foreign keys, and waits on a busy database instead of failing. PostgreSQL needs none of this and gets a
-pre-pinging pool.
+pre-pinging pool whose connection attempts time out in seconds, so a readiness probe or a first request
+against an unreachable server fails fast instead of waiting out the kernel's TCP timeout.
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.types import TypeDecorator, TypeEngine
 
 SQLITE_BUSY_TIMEOUT_SECONDS = 5
+POSTGRESQL_CONNECT_TIMEOUT_SECONDS = 5
 
 
 class UTCDateTime(TypeDecorator[datetime]):
@@ -48,7 +50,9 @@ class UTCDateTime(TypeDecorator[datetime]):
 
 def make_engine(url: str) -> Engine:
     if not url.startswith("sqlite"):
-        return create_engine(url, pool_pre_ping=True)
+        return create_engine(
+            url, pool_pre_ping=True, connect_args={"connect_timeout": POSTGRESQL_CONNECT_TIMEOUT_SECONDS}
+        )
 
     engine = create_engine(
         url, connect_args={"check_same_thread": False, "timeout": SQLITE_BUSY_TIMEOUT_SECONDS}
