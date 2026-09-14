@@ -721,7 +721,8 @@ def test_who_may_revise_withdraw_and_reject(
     ):
         assert response.status_code == 404
     # A proposer downgraded to read may withdraw but not revise.
-    share_id = client.get(f"/v1/notes/{note_id}/shares", auth=ada).json()["items"][0]["id"]
+    shares = client.get(f"/v1/notes/{note_id}/shares", auth=ada).json()["items"]
+    share_id = next(s["id"] for s in shares if s["recipient"]["id"] == me(client, ben))
     client.patch(f"/v1/notes/{note_id}/shares/{share_id}", auth=ada, json={"permissions": ["read"]})
     assert revise(client, ben, r1, e1, {"explanation": "x"}).status_code == 403
     clock.advance(timedelta(minutes=1))
