@@ -25,6 +25,7 @@ from sqlalchemy.orm import Session
 from notes_api import cursors, etags
 from notes_api.contract import FieldError
 from notes_api.http.problems import Conflict, Forbidden, NotFound, PreconditionFailed, ValidationFailed
+from notes_api.merge import three_way
 from notes_api.merge.three_way import Content
 from notes_api.models import Approval, EditRequest, Note, User
 from notes_api.services import notes, permissions
@@ -393,3 +394,41 @@ def _close(session: Session, rv: RequestView, status: str, now: datetime) -> Req
     request.updated_at = now
     session.flush()
     return RequestView(request, rv.note, rv.approvals)
+
+
+# -- preview --------------------------------------------------------------------------------------------
+
+FINAL_CONTENT_DETAIL = (
+    "This note requires peer approval, so the merge must commit the approved proposal as it stands."
+)
+FINAL_CONTENT_ERROR = FieldError(
+    "body", "/finalContent", "not allowed under peer_approval; revise the proposal instead"
+)
+
+
+def base_of(request: EditRequest) -> Content:
+    return Content(request.base_title, request.base_body)
+
+
+def proposed_of(request: EditRequest) -> Content:
+    return Content(request.proposed_title, request.proposed_body)
+
+
+def require_final_content_allowed(rv: RequestView, final: Content | None) -> None:
+    """Under ``peer_approval`` on a protected note, owner-supplied content is refused in preview and merge:
+    the approvers approved the proposal, so the merge must commit exactly its candidate, and conflicts are
+    resolved by revising the proposal. Single-owner and ``self_merge`` notes accept it."""
+    if final is not None and rv.owner_count > 1 and rv.note.note.review_mode == PEER_APPROVAL:
+        raise ValidationFailed([FINAL_CONTENT_ERROR], detail=FINAL_CONTENT_DETAIL)
+
+
+def preview(rv: RequestView, final: Content | None) -> three_way.PreviewComputation:
+    """The three-way preview of an open request on an active note, for an owner the router has checked.
+
+    Base is the request's snapshot, current the live note, proposed the request's latest content. Nothing is
+    written, and the caller reports the versions the pair came from (``requestETag``, ``currentNoteETag``).
+    """
+    require_open_and_active(rv)
+    require_final_content_allowed(rv, final)
+    current = Content(rv.note.note.title, rv.note.note.body)
+    return three_way.preview(base_of(rv.request), current, proposed_of(rv.request), final)

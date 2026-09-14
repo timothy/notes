@@ -30,6 +30,7 @@ def install_edit_request_routes(app: FastAPI) -> None:
     add_route(app, "PATCH", "/edit-requests/{requestId}", revise_edit_request)
     add_route(app, "POST", "/edit-requests/{requestId}/withdraw", withdraw_edit_request)
     add_route(app, "POST", "/edit-requests/{requestId}/reject", reject_edit_request)
+    add_route(app, "POST", "/edit-requests/{requestId}/preview", preview_edit_request)
 
 
 def list_note_edit_requests(
@@ -152,3 +153,19 @@ def reject_edit_request(user: CurrentUser, request: Request, requestId: uuid.UUI
         rv = edit_requests.reject(session, rv=rv, rejecter=user, reason=body.get("reason"), now=now)
         payload, etag = serializers.edit_request(rv), rv.etag
     return serializers.json_response(payload, headers={"ETag": etag})
+
+
+def preview_edit_request(user: CurrentUser, request: Request, requestId: uuid.UUID) -> JSONResponse:
+    """Owners only, no locks, no writes: the body is optional and an empty one counts as omitted."""
+    body = parse_body(request, "PreviewEditRequest", required=False)
+    with sessions(request)() as session, uow.transaction(session, "preview_edit_request"):
+        rv = edit_requests.inspect(
+            session, caller=user, request_id=requestId, now=clock(request).now(), lock=False
+        )
+        notes.require_owner(rv.note)
+        final = body.get("finalContent")
+        computation = edit_requests.preview(
+            rv, Content(final["title"], final["body"]) if final is not None else None
+        )
+        payload = serializers.preview_result(rv, computation)
+    return serializers.json_response(payload)
