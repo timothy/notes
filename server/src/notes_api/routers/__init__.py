@@ -12,7 +12,10 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Annotated, Any
 
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Query, Request
+from sqlalchemy.orm import Session, sessionmaker
+
+from notes_api.clock import Clock
 
 API_PREFIX = "/v1"
 
@@ -27,8 +30,20 @@ def add_route(app: FastAPI, method: str, path: str, endpoint: Callable[..., Any]
     app.add_api_route(API_PREFIX + path, endpoint, methods=[method])
 
 
+def sessions(request: Request) -> sessionmaker[Session]:
+    """The session factory; every operation opens one fresh session and one ``uow.transaction``."""
+    factory: sessionmaker[Session] = request.app.state.session_factory
+    return factory
+
+
+def clock(request: Request) -> Clock:
+    the_clock: Clock = request.app.state.clock
+    return the_clock
+
+
 def install_routes(app: FastAPI) -> None:
     """Register every implemented operation; the list grows with each slice."""
-    from notes_api.routers import users
+    from notes_api.routers import teams, users
 
     users.install_user_routes(app)
+    teams.install_team_routes(app)

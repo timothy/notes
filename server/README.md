@@ -90,6 +90,9 @@ Where the contract leaves a choice, the server's choice is fixed by a test and l
 - A missing `typ` header is accepted; a present one must name an access token (`at+jwt` or `JWT`, case-insensitive).
 - `displayName` precedence is `name`, `preferred_username`, `user-<sub prefix>`, and it is never refreshed after provisioning.
 - Cursors are bound to the caller as well as the collection, filters, and limit; another user cannot continue your page.
+- Membership mutations check that the caller may act (`403`) before whether the target membership exists (`404`), so a nonmember cannot probe who belongs to a team. A nonmember deleting their own absent membership is `404`.
+- A rename to the same name and a role change to the same role are `200` no-ops that leave `updatedAt` unchanged.
+- A team's mutations lock the team row first, so two admins demoting or removing each other, or the last admin leaving twice, are decided one at a time: the second attempt is `409 last_admin` when it would leave no admin, or `403` when the first attempt already took the caller's admin role.
 - Search folds with `casefold()` and does not NFC-normalize (from slice 5).
 
 ### Migrations
