@@ -43,8 +43,9 @@ def clock(request: Request) -> Clock:
 
 def install_routes(app: FastAPI) -> None:
     """Register every implemented operation; the list grows with each slice."""
-    from notes_api.routers import notes, teams, users
+    from notes_api.routers import notes, shares, teams, users
 
     users.install_user_routes(app)
     teams.install_team_routes(app)
     notes.install_note_routes(app)
+    shares.install_share_routes(app)
