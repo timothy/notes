@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
@@ -18,11 +18,12 @@ from sqlalchemy.orm import Session
 from notes_api import etags
 from notes_api.clock import Clock
 from notes_api.http.problems import Conflict, Forbidden, NotFound, PreconditionFailed
-from notes_api.models import Note, NoteOwner, NoteTag, User
+from notes_api.models import Note, NoteOwner, NoteTag, Share, User
 from notes_api.services import permissions
 from notes_api.services.permissions import Access
 
 SELF_MERGE = "self_merge"
+TRASH_RETENTION = timedelta(hours=720)  # "exactly 30 x 24 hours"
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,6 +121,39 @@ def update(
         note.updated_at = clock.now()
         session.flush()
     return NoteView(note, view.owner_ids, list(tags) if tags is not None else view.tags, view.access)
+
+
+def trash(session: Session, *, view: NoteView, clock: Clock) -> NoteView:
+    """Move a note whose owner and version were already checked to the trash.
+
+    Every share goes (owners stay), ``deleted_at`` and ``expires_at`` are set together, and the version
+    advances. A note that is already in the trash is left exactly as it is, so a repeated request with the
+    trash ETag is idempotent and never extends the recovery period.
+    """
+    note = view.note
+    if permissions.is_trashed(note):
+        return view
+    now = clock.now()
+    session.execute(delete(Share).where(Share.note_id == note.id))
+    note.deleted_at = now
+    note.expires_at = now + TRASH_RETENTION
+    note.version = etags.new_version()
+    note.updated_at = now
+    session.flush()
+    return NoteView(note, view.owner_ids, view.tags, view.access)
+
+
+def restore(session: Session, *, view: NoteView, clock: Clock) -> NoteView:
+    """Bring a trashed note back, private to its owners; an active note is ``409 note_already_active``."""
+    note = view.note
+    if not permissions.is_trashed(note):
+        raise Conflict("note_already_active")
+    note.deleted_at = None
+    note.expires_at = None
+    note.version = etags.new_version()
+    note.updated_at = clock.now()
+    session.flush()
+    return NoteView(note, view.owner_ids, view.tags, view.access)
 
 
 def owner_ids(session: Session, note_id: uuid.UUID) -> list[uuid.UUID]:

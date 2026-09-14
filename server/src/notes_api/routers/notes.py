@@ -6,7 +6,7 @@ import uuid
 from typing import Any
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
 from notes_api import serializers, uow
 from notes_api.etags import parse_if_match
@@ -21,6 +21,8 @@ def install_note_routes(app: FastAPI) -> None:
     add_route(app, "POST", "/notes", create_note)
     add_route(app, "GET", "/notes/{noteId}", get_note)
     add_route(app, "PATCH", "/notes/{noteId}", update_note)
+    add_route(app, "DELETE", "/notes/{noteId}", trash_note)
+    add_route(app, "POST", "/notes/{noteId}/restore", restore_note)
 
 
 def create_note(user: CurrentUser, request: Request) -> JSONResponse:
@@ -62,6 +64,27 @@ def update_note(user: CurrentUser, request: Request, noteId: uuid.UUID) -> JSONR
             tags=list(body["tags"]) if "tags" in body else None,
             clock=clock(request),
         )
+        payload, etag = _payload(view), view.etag
+    return serializers.json_response(payload, headers={"ETag": etag})
+
+
+def trash_note(user: CurrentUser, request: Request, noteId: uuid.UUID) -> Response:
+    """204 with the trash ETag; a repeat with that ETag is 204 again and changes nothing."""
+    with sessions(request)() as session, uow.transaction(session, "trash_note"):
+        view = notes.lock(session, caller=user, note_id=noteId, now=clock(request).now())
+        notes.require_owner(view)
+        notes.require_version(view, parse_if_match(request.headers.get("if-match")))
+        etag = notes.trash(session, view=view, clock=clock(request)).etag
+    return Response(status_code=204, headers={"ETag": etag})
+
+
+def restore_note(user: CurrentUser, request: Request, noteId: uuid.UUID) -> JSONResponse:
+    """No request body: whatever arrives is ignored. Expired notes are 404 through the visibility rule."""
+    with sessions(request)() as session, uow.transaction(session, "restore_note"):
+        view = notes.lock(session, caller=user, note_id=noteId, now=clock(request).now())
+        notes.require_owner(view)
+        notes.require_version(view, parse_if_match(request.headers.get("if-match")))
+        view = notes.restore(session, view=view, clock=clock(request))
         payload, etag = _payload(view), view.etag
     return serializers.json_response(payload, headers={"ETag": etag})
 
