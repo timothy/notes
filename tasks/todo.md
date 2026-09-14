@@ -47,7 +47,7 @@ Checklist for `tasks/plan.md` (approved 2026-09-13). Each task's full descriptio
 
 - [x] T3.1 Teams CRUD (M) — deps: T2.5. AC: creator is admin; `scope=mine`; non-admins `403` on PATCH and DELETE; body errors after authorization; unchanged rename is a no-op; deletion removes memberships and team shares while notes, comments, and edit requests stay.
 - [x] T3.2 Memberships with last-admin atomicity (M) — deps: T3.1. AC: nonmember listing `403`; default role `member`; unknown user `422 /userId`; duplicate `409`; last admin cannot be demoted or leave; `403` before the target's `404`; hook and thread races leave exactly one admin.
-- [ ] Checkpoint D: "Directory and teams" row complete; all four workflows green on the PR
+- [x] Checkpoint D: "Directory and teams" row complete; all four workflows green on PR #13 (2026-09-14)
 
 ## PR 3: slices 4, 5, and 6
 
