@@ -79,7 +79,7 @@ Checklist for `tasks/plan.md` (approved 2026-09-13). Each task's full descriptio
 - [x] T7.1 List, get, create comments (S) — deps: T6.2. AC: readers list and get `200` oldest first (`createdAt ASC, id ASC`, ties by id); a read-only or proposal-only recipient creates `403`; a comment reached through another note's path is `404`; creating a comment leaves the note ETag unchanged; owners of a trashed note read its comments and create `409 note_not_active`; the Create-and-share flow's comment step passes.
 - [x] T7.2 Update and delete comments (M) — deps: T7.1. AC: owner PATCH of another's comment is `403` and owner DELETE is `204`; an author downgraded to read gets `200` on GET and `403` on PATCH and DELETE; an identical body is a no-op keeping the ETag; a stale comment ETag is `412`, a missing one `428`, a malformed one `400`; a trashed note is `409 note_not_active` after the version check; a competing edit makes the second `412`; the conformance run covers the five comment operations.
 - [x] T7.3 Docs and bookkeeping (S) — deps: T7.2.
-- [ ] Checkpoint H: all four workflows green on the PR
+- [x] Checkpoint H: all four workflows green on PR #17 (2026-09-14)
 
 ## PR 4b: slice 8 (edit requests)
 
