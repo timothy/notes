@@ -65,7 +65,7 @@ Checklist for `tasks/plan.md` (approved 2026-09-13). Each task's full descriptio
 - [x] T5.2a GET /notes: scope, state, keyset, dedupe (M) — deps: T5.1, T2.5. AC: overlapping grants list once; `scope` partitions; `state=trashed` is the owner's unexpired trash; ties page by id; revocation between pages hides the note; a page costs a bounded number of statements.
 - [x] T5.2b GET /notes: q, tag, teamId (M) — deps: T5.2a. AC: folded literal search over title or body with literal wildcards; exact AND tags; every invalid parameter is `422` naming it; `teamId` selects team-shared notes for anyone who can read them and grants nothing.
 - [x] T5.3 Docs and bookkeeping (S) — deps: T5.2b.
-- [ ] Checkpoint F: all four workflows green on the PR
+- [x] Checkpoint F: all four workflows green on PR #15 (2026-09-14)
 
 ## PR 3c: slice 6 (shares and access paths)
 
