@@ -57,7 +57,7 @@ Checklist for `tasks/plan.md` (approved 2026-09-13). Each task's full descriptio
 - [x] T4.2 POST /notes and GET /notes/{noteId} (M) — deps: T4.1. AC: the contract's `CreateNoteRequest` round-trips with equal ETags; defaults; every body rule at its pointer; a stranger gets `404`, a reader `200`.
 - [x] T4.3 PATCH /notes/{noteId} and the Schemathesis start (M) — deps: T4.2. AC: effective changes advance the ETag, no-ops do not; `428`/`400`/`412`/`409` in order with nothing written; a competitor makes the primary `412`; an owner added between read and write makes a body PATCH `409 direct_edit_not_allowed`; fifteen operations conform.
 - [x] T4.4 Docs and bookkeeping (S) — deps: T4.3.
-- [ ] Checkpoint E: all four workflows green on the PR
+- [x] Checkpoint E: all four workflows green on PR #14 (2026-09-14)
 
 ## PR 3b: slice 5 (trash, restore, purge, list and search)
 
