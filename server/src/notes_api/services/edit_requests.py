@@ -18,14 +18,15 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from notes_api import etags
 from notes_api.contract import FieldError
-from notes_api.http.problems import Conflict, Forbidden, PreconditionFailed, ValidationFailed
+from notes_api.http.problems import Conflict, Forbidden, NotFound, PreconditionFailed, ValidationFailed
 from notes_api.merge.three_way import Content
-from notes_api.models import Approval, EditRequest, User
-from notes_api.services import permissions
+from notes_api.models import Approval, EditRequest, Note, User
+from notes_api.services import notes, permissions
 from notes_api.services.notes import NoteView
 
 OPEN = "open"
@@ -91,6 +92,55 @@ def required_approvals(
     if proposer_is_owner:
         return min(policy, owner_count - 1)
     return max(2, min(policy, owner_count))
+
+
+def inspect(
+    session: Session, *, caller: User, request_id: uuid.UUID, now: datetime, lock: bool
+) -> RequestView:
+    """The request as ``caller`` may see it, or ``404``.
+
+    The note's own visibility comes first (expired: nobody; trashed: owners only), then the inspect rule:
+    owners and the proposer, while they can still read the note. Other readers of the note get ``404`` like
+    strangers. With ``lock`` the note is locked ``FOR UPDATE`` together with the caller's access rows, and
+    the request row is loaded for the first time under ``FOR UPDATE``, so a competitor's commit cannot leave
+    stale attributes behind (see the module docstring). Without it, one joined select reads the request and
+    its note together: the coherent pair of versions a preview reports.
+    """
+    if lock:
+        located = select(EditRequest.note_id).where(EditRequest.id == request_id)
+        note_id = session.execute(located).scalar_one_or_none()
+        if note_id is None:
+            raise NotFound()
+        view = notes.lock(session, caller=caller, note_id=note_id, now=now, lock_access=True)
+        locked = (
+            select(EditRequest)
+            .where(EditRequest.id == request_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        request = session.execute(locked).scalar_one_or_none()
+        if request is None:
+            raise NotFound()
+    else:
+        paired = select(EditRequest, Note).join(Note, Note.id == EditRequest.note_id)
+        pair = session.execute(paired.where(EditRequest.id == request_id)).one_or_none()
+        if pair is None:
+            raise NotFound()
+        request, note = pair[0], pair[1]
+        view = notes.view_of(session, note, caller, now)
+    if not (view.access.is_owner or request.proposer_id == caller.id):
+        raise NotFound()
+    return RequestView(request, view, approvals_of(session, request.id))
+
+
+def approvals_of(session: Session, request_id: uuid.UUID) -> list[Approval]:
+    """The request's approvals in the contract's order, ``approvedAt ASC, userId ASC``."""
+    statement = (
+        select(Approval)
+        .where(Approval.request_id == request_id)
+        .order_by(Approval.approved_at, Approval.user_id)
+    )
+    return list(session.execute(statement).scalars())
 
 
 def create(

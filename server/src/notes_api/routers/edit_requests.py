@@ -17,6 +17,17 @@ from notes_api.services import edit_requests, notes
 
 def install_edit_request_routes(app: FastAPI) -> None:
     add_route(app, "POST", "/notes/{noteId}/edit-requests", create_edit_request)
+    add_route(app, "GET", "/edit-requests/{requestId}", get_edit_request)
+
+
+def get_edit_request(user: CurrentUser, request: Request, requestId: uuid.UUID) -> JSONResponse:
+    """Owners and the proposer with current read access; everyone else is 404."""
+    with sessions(request)() as session, uow.transaction(session, "get_edit_request"):
+        rv = edit_requests.inspect(
+            session, caller=user, request_id=requestId, now=clock(request).now(), lock=False
+        )
+        payload, etag = serializers.edit_request(rv), rv.etag
+    return serializers.json_response(payload, headers={"ETag": etag})
 
 
 def create_edit_request(user: CurrentUser, request: Request, noteId: uuid.UUID) -> JSONResponse:
