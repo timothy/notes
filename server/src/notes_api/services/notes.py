@@ -188,20 +188,7 @@ def list_notes(
     body; each ``tag`` must be present; ``teamId`` requires a share to that team and grants nothing.
     """
     _check_filters(filters)
-    owner_row = select(NoteOwner.note_id).where(NoteOwner.note_id == Note.id, NoteOwner.user_id == caller.id)
-    direct_share = select(Share.id).where(
-        Share.note_id == Note.id, Share.recipient_type == permissions.USER, Share.recipient_id == caller.id
-    )
-    team_share = (
-        select(Share.id)
-        .join(Membership, Membership.team_id == Share.recipient_id)
-        .where(
-            Share.note_id == Note.id,
-            Share.recipient_type == permissions.TEAM,
-            Membership.user_id == caller.id,
-        )
-    )
-    owned, readable = owner_row.exists(), or_(owner_row.exists(), direct_share.exists(), team_share.exists())
+    owned, readable = permissions.access_predicates(caller.id)
 
     statement = select(Note)
     if filters.state == "trashed":

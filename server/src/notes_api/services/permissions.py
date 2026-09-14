@@ -16,7 +16,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime
 
-from sqlalchemy import select
+from sqlalchemy import ColumnElement, or_, select
 from sqlalchemy.orm import Session
 
 from notes_api.models import Membership, Note, NoteOwner, Share
@@ -85,6 +85,23 @@ def shares_for(
         direct = direct.with_for_update(read=True)
         through_teams = through_teams.with_for_update(read=True)
     return [*session.execute(direct).scalars(), *session.execute(through_teams).scalars()]
+
+
+def access_predicates(caller_id: uuid.UUID) -> tuple[ColumnElement[bool], ColumnElement[bool]]:
+    """``(owned, readable)`` as ``EXISTS`` predicates correlated on ``Note``, for statements that select
+    notes or rows joined to them: an owner row; an owner row, a direct share, or a share to a team the
+    caller currently belongs to. A note matches once however many paths grant it."""
+    owner_row = select(NoteOwner.note_id).where(NoteOwner.note_id == Note.id, NoteOwner.user_id == caller_id)
+    direct_share = select(Share.id).where(
+        Share.note_id == Note.id, Share.recipient_type == USER, Share.recipient_id == caller_id
+    )
+    team_share = (
+        select(Share.id)
+        .join(Membership, Membership.team_id == Share.recipient_id)
+        .where(Share.note_id == Note.id, Share.recipient_type == TEAM, Membership.user_id == caller_id)
+    )
+    owned = owner_row.exists()
+    return owned, or_(owned, direct_share.exists(), team_share.exists())
 
 
 def is_trashed(note: Note) -> bool:

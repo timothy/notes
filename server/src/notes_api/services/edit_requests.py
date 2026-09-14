@@ -15,13 +15,14 @@ keep stale attributes on PostgreSQL even after a later locking select, so nothin
 from __future__ import annotations
 
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 
-from sqlalchemy import select
+from sqlalchemy import Select, select
 from sqlalchemy.orm import Session
 
-from notes_api import etags
+from notes_api import cursors, etags
 from notes_api.contract import FieldError
 from notes_api.http.problems import Conflict, Forbidden, NotFound, PreconditionFailed, ValidationFailed
 from notes_api.merge.three_way import Content
@@ -34,6 +35,10 @@ MERGED = "merged"
 REJECTED = "rejected"
 WITHDRAWN = "withdrawn"
 PEER_APPROVAL = "peer_approval"
+INCOMING = "incoming"
+TRASHED = "trashed"
+NOTE_COLLECTION = "note_edit_requests"
+INBOX_COLLECTION = "edit_requests"
 
 EMPTY_PROPOSAL_DETAIL = "The proposed content is identical to the base snapshot."
 EMPTY_PROPOSAL_ERROR = FieldError("body", "/proposedContent", "proposal must differ from the base")
@@ -141,6 +146,101 @@ def approvals_of(session: Session, request_id: uuid.UUID) -> list[Approval]:
         .order_by(Approval.approved_at, Approval.user_id)
     )
     return list(session.execute(statement).scalars())
+
+
+def list_for_note(
+    session: Session, *, caller: User, view: NoteView, status: str, limit: int, cursor: str | None
+) -> cursors.Page[RequestView]:
+    """One page of the note's requests the caller may inspect, newest first: every request with ``status``
+    for an owner, their own for anyone else, so a reader who never proposed gets an empty page."""
+    statement = select(EditRequest).where(EditRequest.note_id == view.note.id, EditRequest.status == status)
+    if not view.access.is_owner:
+        statement = statement.where(EditRequest.proposer_id == caller.id)
+    filters = {"noteId": str(view.note.id), "status": status}
+    page = _page(
+        session, statement, limit, cursor, cursors.fingerprint(caller.id, NOTE_COLLECTION, filters, limit)
+    )
+    return cursors.Page(views_for(session, page.items, caller, known={view.note.id: view}), page.next_cursor)
+
+
+def inbox(
+    session: Session,
+    *,
+    caller: User,
+    view: str,
+    status: str,
+    state: str,
+    limit: int,
+    cursor: str | None,
+    now: datetime,
+) -> cursors.Page[RequestView]:
+    """One page of the caller's inbox, newest first.
+
+    ``incoming`` is every request with ``status`` on a note the caller owns (their own proposals on those
+    notes included); ``outgoing`` is what they proposed on notes they can still read. ``state`` follows the
+    note: active notes, or the caller's own unexpired trash, which is owners only, so an ``outgoing`` view of
+    the trash holds only the requests an owner proposed on their own notes. Expired notes never match.
+    """
+    owned, readable = permissions.access_predicates(caller.id)
+    statement = (
+        select(EditRequest).join(Note, Note.id == EditRequest.note_id).where(EditRequest.status == status)
+    )
+    if state == TRASHED:
+        statement = statement.where(Note.deleted_at.is_not(None), Note.expires_at > now, owned)
+    else:
+        statement = statement.where(Note.deleted_at.is_(None))
+    if view == INCOMING:
+        statement = statement.where(owned)
+    else:
+        statement = statement.where(EditRequest.proposer_id == caller.id, readable)
+    filters = {"view": view, "status": status, "state": state}
+    page = _page(
+        session, statement, limit, cursor, cursors.fingerprint(caller.id, INBOX_COLLECTION, filters, limit)
+    )
+    return cursors.Page(views_for(session, page.items, caller), page.next_cursor)
+
+
+def _page(
+    session: Session, statement: Select[tuple[EditRequest]], limit: int, cursor: str | None, fingerprint: str
+) -> cursors.Page[EditRequest]:
+    return cursors.paginate(
+        session,
+        statement,
+        moment=EditRequest.created_at,
+        id_column=EditRequest.id,
+        key_of=lambda row: cursors.Key(row.created_at, row.id),
+        limit=limit,
+        cursor=cursor,
+        fingerprint=fingerprint,
+    )
+
+
+def views_for(
+    session: Session,
+    rows: list[EditRequest],
+    caller: User,
+    *,
+    known: Mapping[uuid.UUID, NoteView] | None = None,
+) -> list[RequestView]:
+    """Request views for a page in a bounded number of statements: the notes not already ``known`` and
+    their views for the caller through ``notes.views_for``, then every request's approvals, each in one
+    batch keyed by the page's ids."""
+    if not rows:
+        return []
+    note_views: dict[uuid.UUID, NoteView] = dict(known or {})
+    missing = [note_id for note_id in {row.note_id for row in rows} if note_id not in note_views]
+    if missing:
+        note_rows = list(session.execute(select(Note).where(Note.id.in_(missing))).scalars())
+        note_views.update((view.note.id, view) for view in notes.views_for(session, note_rows, caller))
+    approvals: dict[uuid.UUID, list[Approval]] = {row.id: [] for row in rows}
+    statement = (
+        select(Approval)
+        .where(Approval.request_id.in_(list(approvals)))
+        .order_by(Approval.approved_at, Approval.user_id)
+    )
+    for approval in session.execute(statement).scalars():
+        approvals[approval.request_id].append(approval)
+    return [RequestView(row, note_views[row.note_id], approvals[row.id]) for row in rows]
 
 
 def create(
