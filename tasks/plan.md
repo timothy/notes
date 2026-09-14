@@ -15,7 +15,7 @@ Local tooling present: uv 0.11.7, Python 3.12.11 (matches CI) and 3.14.0, Docker
 - **The contract is the only source of truth.** The server exposes the 47 operations under `/v1`, plus two operational probes outside it (`/healthz` and `/readyz`, not in the contract, blocked at the ingress; amended 2026-09-13), and nothing else (`openapi_url=None`); `openapi.yaml` changes only through the normal contract process, never to suit the server.
 - **The spec validates requests at runtime.** Request bodies are validated against the spec's JSON Schemas (Draft 2020-12 through `referencing`, built exactly as the checker's `Contract` class does in `scripts/validate_contract.py:250-269`). This is the one refinement of the "generated Pydantic models" decision: datamodel-code-generator silently drops `if/then` (ReviewPolicy), `minProperties` (UpdateNote, ReviseEditRequest), the `PermissionSet` enum of arrays, and ordered `uniqueItems`, so a Pydantic validator would re-implement those rules by hand and drift. The generated models remain the typed layer that validated dicts are parsed into, with a drift check in CI.
 - **Responses are dicts from one serializer module**, validated in tests against the spec. Response shapes carry per-status `if/then` and `unevaluatedProperties: false`; dict-building is shorter and the test fixture proves conformance on every request.
-- **The acceptance table drives the test suite.** Each test is tagged with its section 6 row; an audit asserts all 17 rows are covered.
+- **The acceptance table drives the test suite.** Each test is tagged with its section 6 row; an audit asserts all 18 rows are covered.
 - **One check ladder for every mutation** (below), grounded in design guide section 2 ("Authenticate first. Resolve access ... before returning content, lifecycle details, ETags, or conflict data") and section 4 ("an old ETag returns `412`; using the current ETag with an invalid transition returns `409`").
 - **Merge engine is a pure module built first.** No server or database dependency, byte-exact fixtures from the spec's examples, property tests.
 - **Whole schema in one migration.** The data model is fully specified by the contract; slices add code, not tables.
@@ -31,7 +31,7 @@ Runtime and layout
 2. Sync SQLAlchemy 2.0 with plain `def` endpoints in FastAPI's threadpool. No async database layer.
 3. Configuration via pydantic-settings: `DATABASE_URL` (required, no default; SQLite is tests-only), `OIDC_ISSUER` and `OIDC_AUDIENCE` (required, non-blank; amended 2026-09-14), exactly one of `OIDC_JWKS_URL` or an inline `OIDC_JWKS` (the compose stack and the tests use the inline form), `CONTRACT_PATH` (defaults to the checkout's `openapi.yaml`; the image sets `/app/openapi.yaml`). An empty variable counts as unset (`env_ignore_empty`), so compose can pass `${OIDC_JWKS_URL:-}`.
 4. Probes are `GET /healthz` (liveness, no dependencies) and `GET /readyz` (readiness, `SELECT 1`, `503` when the database is unreachable, no connection details in the body), outside `/v1` and outside the contract, blocked at the ingress. Superseded on 2026-09-13 the earlier "unauthenticated `GET /v1/me` returning the 401 Problem": Kubernetes `httpGet` probes fail on any status of 400 or above, so that signal could never serve as a probe.
-5. Delivery: pull requests per group of slices (0-1, then 2 and 3 separately as PR 2a and PR 2b since 2026-09-14, then 4, 5, and 6 separately as PR 3a, 3b, and 3c, then 7, 8, and 9 separately as PR 4a, 4b, and 4c since 2026-09-14, then 10-12, 13-14), each merged green before the next branch is cut from `main`, never stacked. `tasks/plan.md` and `tasks/todo.md` are committed in the first PR.
+5. Delivery: pull requests per group of slices (0-1, then 2 and 3 separately as PR 2a and PR 2b since 2026-09-14, then 4, 5, and 6 separately as PR 3a, 3b, and 3c, then 7, 8, and 9 separately as PR 4a, 4b, and 4c since 2026-09-14, then 10, 11, and 12 separately as PR 5a, 5b, and 5c, then 13-14), each merged green before the next branch is cut from `main`, never stacked. `tasks/plan.md` and `tasks/todo.md` are committed in the first PR.
 
 Contract plumbing
 6. Bodies are read from the raw request, not declared as FastAPI parameters, so the order is `415` (not `application/json`), `400 malformed_request` (unparseable or empty when required), then `422 validation_failed` from the spec schema with `errors[]` (location `body`, RFC 6901 pointer; unknown fields reported per key with detail `unknown field`). Query, header, and path errors are `422` with the parameter name; a missing `If-Match` is `428`; a weak, list, or `*` value is `400` with a `header` error named `If-Match`. Body-less actions ignore `Content-Type`.
@@ -280,7 +280,9 @@ Verify: `tests/test_races.py` tagged `acceptance("Review races")`. Deps: T9.2. F
 
 **Checkpoint J.** The section 5 "Submit" and "Preview and merge" flows pass end to end.
 
-### Slice 10: owners, review policy, protected notes (PR 5 with slices 11 and 12)
+### Slice 10: owners, review policy, protected notes (PR 5a; slices 11 and 12 follow as PR 5b and 5c)
+
+(Amended 2026-09-14: `services/ownership.py` and `routers/ownership.py`; the leaver's approvals are deleted through `services/approvals.py::delete_for_owner` with `DELETE ... RETURNING` under the note lock, and only the open requests that lost an approval take a new version; the owner row is deleted through the ORM so a self-removal re-resolves the leaver's view, which reports `["read"]` when no share remains; `removeOwner` resolves a non-owner target as `404` before the caller's `403`; owner positions continue from the highest in use; a no-op policy PATCH keeps the ETag; the conformance run seeds a co-owner and uses a per-operation parameter override for `removeOwner`.)
 
 **T10.1 Add and remove owners (M).** `POST /notes/{noteId}/owners`: author only (`403` for co-owners and readers, `404` for non-readers), lock, `If-Match`, trashed `409`, unknown user `422 /userId`, existing owner `409 duplicate_owner`, twenty-first `422 /userId`, next position, existing share kept. `DELETE /notes/{noteId}/owners/{userId}`: author removes any co-owner, a co-owner removes only themselves, else `403`; non-owner target `404`; author target `409 author_cannot_be_removed`; open requests locked, the leaver's approvals deleted, those request versions bumped.
 AC: a share held by the new owner persists and is effective again after removal; removal deletes the leaver's approvals on open requests and changes only those requests' ETags while closed requests are untouched; the note ETag advances on both, so an earlier `baseNoteETag` or `expectedNoteETag` fails with `412`.
@@ -292,7 +294,7 @@ Verify: `tests/test_review_policy.py` tagged `acceptance("Protected notes")`. De
 
 **Checkpoint K.**
 
-### Slice 11: approvals and peer approval
+### Slice 11: approvals and peer approval (PR 5b)
 
 **T11.1 Approve and revoke-approval (M).** Both: inspect right else `404`, owner else `403`, proposer `403` with the self-approval detail, request `If-Match`, closed `409 request_not_open`, trashed `409 note_not_active`, note lock then request lock. Approve inserts or no-ops; revoke deletes or no-ops; effective changes bump version and `updatedAt`.
 AC: approving twice returns an identical ETag and one approval, and revoking a missing approval is a no-op; approvals are recorded on a `self_merge` note and on a single-owner note; approve versus revise racing on the same request ETag has exactly one winner (hook and thread tests).
@@ -304,7 +306,7 @@ Verify: `tests/test_peer_approval.py` tagged `acceptance("Approvals")` and `acce
 
 **Checkpoint L.**
 
-### Slice 12: request comments
+### Slice 12: request comments (PR 5c)
 
 **T12.1 Request comments CRUD (M).** List and get for inspectors (`404` otherwise); create for inspectors without note `comment` permission, allowed on closed requests, trashed `409`; PATCH by the author only (owners `403`) with the comment ETag; DELETE by any owner or the author; `edit_requests.version` never touched; `Location`.
 AC: a propose-only proposer comments `201` and another reader gets `404`; owner PATCH of the proposer's comment is `403` and owner DELETE is `204`; the request ETag is identical before and after create, update, and delete.
@@ -318,8 +320,8 @@ Verify: `tests/test_request_comments.py` tagged `acceptance("Request comments")`
 AC: zero Schemathesis failures across 47 operations; every request-schema fixture maps to an endpoint and behaves; the sweep fits the CI time budget.
 Verify: `tests/conformance/`. Deps: T12.1. Files: `tests/conformance/test_schemathesis.py`, `tests/conformance/test_negative_replay.py`.
 
-**T13.2 Acceptance audit and PostgreSQL job (M).** A test collects the `acceptance` markers and fails if any of the 17 rows has no test; the PostgreSQL job runs the whole suite including thread-based race tests; dialect issues fixed (bare `FOR UPDATE` select before joins); `alembic upgrade head` on PostgreSQL in CI.
-AC: all 17 rows covered; the PostgreSQL suite is green; the migration applies in CI.
+**T13.2 Acceptance audit and PostgreSQL job (M).** A test collects the `acceptance` markers and fails if any of the 18 rows has no test; the PostgreSQL job runs the whole suite including thread-based race tests; dialect issues fixed (bare `FOR UPDATE` select before joins); `alembic upgrade head` on PostgreSQL in CI.
+AC: all 18 rows covered; the PostgreSQL suite is green; the migration applies in CI.
 Verify: CI. Deps: T13.1. Files: `tests/conftest.py`, `.github/workflows/server.yml`.
 
 **Checkpoint N.**
@@ -353,7 +355,7 @@ Verify: follow the README on a clean checkout. Deps: T13.2. Files: `server/READM
 1. `cd server && uv sync --frozen && uv run pytest` runs the full suite on SQLite with the `ContractClient` validating every response.
 2. `DATABASE_URL=postgresql://... uv run pytest` runs the same suite against PostgreSQL; CI does this with a service container.
 3. `uv run pytest tests/conformance` runs Schemathesis over all 47 operations against the ASGI app and replays every schema fixture through its endpoint.
-4. The three section 5 flows (create and share; submit, preview, merge; protect and merge with peer approval) run as end-to-end tests using the spec's example payloads, and the acceptance audit shows all 17 rows covered.
+4. The three section 5 flows (create and share; submit, preview, merge; protect and merge with peer approval) run as end-to-end tests using the spec's example payloads, and the acceptance audit shows all 18 rows covered.
 5. `server/scripts/gen_models.sh --check` proves the committed models match the contract.
 6. The contract checks in `.github/workflows/contract.yml` still pass, proving `openapi.yaml` was not bent to fit the server.
 7. `docker build -t notes-api:dev . && NOTES_API_IMAGE=notes-api:dev server/scripts/smoke_image.sh` prints `smoke OK`, and the `Container image` workflow is green on the pull request.

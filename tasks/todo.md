@@ -98,16 +98,26 @@ Checklist for `tasks/plan.md` (approved 2026-09-13). Each task's full descriptio
 - [x] T9.4 Docs, the "Preview and merge" flow, and bookkeeping (S) — deps: T9.3.
 - [x] Checkpoint J: all four workflows green on PR #19 (2026-09-14); the section 5 "Submit and discover" and "Preview and merge" flows pass end to end
 
-## PR 5: slices 10, 11, and 12
+## PR 5a: slice 10 (owners and the review policy; slices 10, 11, and 12 split into PR 5a, 5b, and 5c on 2026-09-14)
 
-- [ ] T10.1 Add and remove owners (M) — deps: T9.3.
-- [ ] T10.2 Review policy and protected-note behavior (M) — deps: T10.1.
-- [ ] Checkpoint K
+- [x] T10.1 Add and remove owners (M) — deps: T9.3. AC: the contract's `AddOwnerRequest` returns the `NoteRunbookProtected` shape with a new ETag; only the author adds (`403` for co-owners and readers, `404` for strangers); an unknown user is `422 /userId`, an existing owner `409 duplicate_owner`, the twenty-first owner `422`; a share held by the new owner stays and is effective again after removal; positions continue past a gap; the author removes any co-owner and a co-owner only themselves, a non-owner target is `404` before the caller's `403`, the author is `409 author_cannot_be_removed`, and a self-removal answers with the leaver's own view; removal deletes the leaver's approvals and bumps only the requests that lost one while closed requests stay frozen; stale `baseNoteETag` and `expectedNoteETag` values fail afterwards; a competing removal makes an addition `412` and two co-owners leaving on one ETag permit exactly one.
+- [x] T10.2 Review policy and protected-note behaviour (M) — deps: T10.1. AC: the guide's walkthrough up to the merge (`NoteRunbookPeerApproval`, `direct_edit_not_allowed` for title or body, tags still editable, `requiredApprovals: 1`, `approval_required` until a peer approves); `requiredApprovals` above the owner count is the contract's `422` with the right count; the schema rejects inconsistent bodies at their pointers; author only; `428`/`400`/`412`; trashed `409`; a no-op keeps the ETag; the stored policy persists when owners leave while direct edits resume and the open request merges; an owner added between read and PATCH is caught inside the transaction; the conformance run covers the three operations.
+- [x] T10.3 Docs and bookkeeping (S) — deps: T10.2.
+- [x] Checkpoint K: all four workflows green on PR #20 (2026-09-14)
+
+## PR 5b: slice 11 (approvals)
+
 - [ ] T11.1 Approve and revoke-approval (M) — deps: T10.2.
-- [ ] T11.2 Peer-approval merge counting and freezing (M) — deps: T11.1. Section 5 "Protect a note" end to end.
+- [ ] T11.2 Peer approval end to end, races, and the "Protect a note" flow (M) — deps: T11.1.
+- [ ] T11.3 Docs and bookkeeping (S) — deps: T11.2.
 - [ ] Checkpoint L
+
+## PR 5c: slice 12 (request comments, the full conformance run, the acceptance audit)
+
 - [ ] T12.1 Request comments CRUD (M) — deps: T11.2.
-- [ ] Checkpoint M: all three section 5 flows pass
+- [ ] T12.2 The flow's comment step, the full conformance run, the acceptance audit (M) — deps: T12.1.
+- [ ] T12.3 Docs and bookkeeping (S) — deps: T12.2.
+- [ ] Checkpoint M: all three section 5 flows pass; every operation runs in the conformance suite; the audit finds all 18 rows
 
 ## PR 6: slices 13 and 14
 

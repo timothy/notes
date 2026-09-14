@@ -3,11 +3,11 @@
 Schemathesis generates requests from the contract, valid and deliberately invalid, and checks that each
 response is a declared status with the declared headers, media type, and body schema. The include list
 grows one slice at a time; an id that matches nothing fails the run loudly. One note, one team, one
-membership, one share, one comment, and one open edit request are seeded so that path parameters point at
-real resources and the 2xx, 409, and 412 branches are reached as well as the 404s. Every operation runs
-as a subtest over that one database in document order; nothing a generated request can do closes or
-removes the seeded rows, because the conditional mutations need an ``If-Match`` equal to a stored version
-and the generated values never are.
+membership, one co-owner, one share, one comment, and one open edit request are seeded so that path
+parameters point at real resources and the 2xx, 409, and 412 branches are reached as well as the 404s.
+Every operation runs as a subtest over that one database in document order; nothing a generated request
+can do closes or removes the seeded rows, because the conditional mutations need an ``If-Match`` equal to
+a stored version and the generated values never are.
 
 Two checks are excluded on purpose: ``positive_data_acceptance`` rejects the ladder's own 400, 412, 422,
 and 428 answers to schema-valid but semantically wrong input, and ``ignored_auth`` triples every 2xx to
@@ -26,7 +26,8 @@ import yaml
 from fastapi import FastAPI
 from hypothesis import HealthCheck, settings
 from schemathesis import GenerationMode
-from schemathesis.config import CoveragePhaseConfig, GenerationConfig
+from schemathesis.config import CoveragePhaseConfig, GenerationConfig, OperationConfig
+from schemathesis.filters import FilterSet
 
 from notes_api.contract import DEFAULT_CONTRACT_PATH
 from tests.contract_client import ContractClient
@@ -70,6 +71,9 @@ OPERATIONS = [
     "rejectEditRequest",
     "previewEditRequest",
     "mergeEditRequest",
+    "addOwner",
+    "removeOwner",
+    "updateReviewPolicy",
 ]
 EXCLUDED_CHECKS = ["positive_data_acceptance", "ignored_auth"]
 MISSING_HEADER_STATUSES = ["400", "401", "403", "406", "415", "422", "428"]
@@ -79,12 +83,19 @@ RAW: dict[str, Any] = yaml.safe_load(Path(DEFAULT_CONTRACT_PATH).read_text(encod
 
 @pytest.fixture
 def conformance_schema(
-    app: FastAPI, client: ContractClient, ada: Persona, ben: Persona
+    app: FastAPI, client: ContractClient, ada: Persona, ben: Persona, cara: Persona
 ) -> schemathesis.BaseSchema:
     created = client.post("/v1/notes", auth=ada, json={"title": "Conformance seed", "tags": ["seed"]})
     note = created.json()
     team = client.post("/v1/teams", auth=ada, json={"name": "Conformance"}).json()
     ben_id = client.get("/v1/me", auth=ben).json()["id"]
+    cara_id = client.get("/v1/me", auth=cara).json()["id"]
+    # Cara becomes a co-owner through the real operation, so the note is protected and removeOwner has a
+    # real target; the note's ETag moves with it.
+    added = client.post(
+        f"/v1/notes/{note['id']}/owners", auth=ada, if_match=created.headers["ETag"], json={"userId": cara_id}
+    )
+    assert added.status_code == 200, added.text
     assert (
         client.post(f"/v1/teams/{team['id']}/members", auth=ada, json={"userId": ben_id}).status_code == 201
     )
@@ -101,7 +112,7 @@ def conformance_schema(
         f"/v1/notes/{note['id']}/edit-requests",
         auth=ben,
         json={
-            "baseNoteETag": created.headers["ETag"],
+            "baseNoteETag": added.headers["ETag"],
             "proposedContent": {"title": "Conformance seed", "body": "A proposed body.\n"},
         },
     ).json()
@@ -118,6 +129,14 @@ def conformance_schema(
             "path.commentId": comment["id"],
             "path.requestId": edit_request["id"],
         },
+    )
+    # path.userId is Ben for the user and membership operations; removeOwner alone targets Cara, the
+    # co-owner, so it reaches its 412 branch instead of the 404 a non-owner would give. FilterSet.include
+    # mutates the set and returns None, so the set is built first.
+    only_remove_owner = FilterSet()
+    only_remove_owner.include(operation_id="removeOwner")
+    schema.config.operations.operations.append(
+        OperationConfig(filter_set=only_remove_owner, parameters={"path.userId": cara_id})
     )
     schema.config.generation.update(with_security_parameters=False)
     schema.config.checks.update(excluded_check_names=EXCLUDED_CHECKS)
