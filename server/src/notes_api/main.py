@@ -10,17 +10,30 @@ from __future__ import annotations
 from fastapi import FastAPI
 
 from notes_api import CONTRACT_VERSION
+from notes_api.auth.jwt import TokenVerifier
 from notes_api.clock import Clock, SystemClock
-from notes_api.config import Settings
+from notes_api.config import Settings, load_settings
 from notes_api.contract import load_contract
 from notes_api.db import make_engine, make_session_factory
 from notes_api.http.health import install_health_routes
 from notes_api.http.middleware import NoStoreMiddleware
 from notes_api.http.problems import install_problem_handlers
+from notes_api.routers import install_routes
 
 
 def create_app(settings: Settings | None = None, clock: Clock | None = None) -> FastAPI:
-    settings = settings or Settings()
+    """The server: the base application plus every implemented operation."""
+    app = create_base_app(settings, clock)
+    install_routes(app)
+    return app
+
+
+def create_base_app(settings: Settings | None = None, clock: Clock | None = None) -> FastAPI:
+    """Everything but the contract's operations: state, middleware, error handlers, and the probes.
+
+    The harness tests build on this so they can register stand-in routes at contract paths.
+    """
+    settings = settings or load_settings()
     app = FastAPI(
         title="Notes API", version=CONTRACT_VERSION, openapi_url=None, docs_url=None, redoc_url=None
     )
@@ -29,6 +42,7 @@ def create_app(settings: Settings | None = None, clock: Clock | None = None) -> 
     app.state.engine = make_engine(settings.database_url)
     app.state.session_factory = make_session_factory(app.state.engine)
     app.state.clock = clock or SystemClock()
+    app.state.verifier = TokenVerifier(settings)
     app.add_middleware(NoStoreMiddleware)
     install_problem_handlers(app)
     install_health_routes(app)

@@ -13,7 +13,10 @@ Each release is an annotated tag `v<version>` on `main`, so a frozen copy of any
 - Repository: a reference server under `server/` (FastAPI, work in progress), shipped as a container image (`Dockerfile`:
   non-root, read-only, one uvicorn process). `compose.yaml` runs PostgreSQL 17, the migration, and the API locally;
   `.github/workflows/image.yml` lints, scans, and smoke-tests the image on every pull request. The server requires
-  `DATABASE_URL` and answers `GET /healthz` and `GET /readyz` outside the contract for container probes. No contract change.
+  `DATABASE_URL` and the `OIDC_*` settings, verifies bearer tokens (RS256 and ES256, inline JWKS or JWKS URL), serves
+  `GET /me`, `GET /users`, and `GET /users/{userId}` with keyset cursors, carries a development token issuer
+  (`python -m notes_api.dev_issuer`) for the compose stack and the smoke test, and answers `GET /healthz` and
+  `GET /readyz` outside the contract for container probes. No contract change.
 
 ## [2.0.0] - 2026-09-13
 

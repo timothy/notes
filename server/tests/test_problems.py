@@ -6,12 +6,12 @@ import pytest
 from fastapi import APIRouter, FastAPI, Query, Request
 from fastapi.testclient import TestClient
 
-from notes_api.config import Settings
 from notes_api.contract import Contract
 from notes_api.etags import parse_if_match
 from notes_api.http.bodies import parse_body
 from notes_api.http.problems import PROBLEMS, Unauthenticated
 from notes_api.main import create_app
+from tests.support import settings_for
 
 PROBLEM_JSON = "application/problem+json"
 TYPE_PREFIX = "https://notes-api.example.com/problems/"
@@ -49,7 +49,7 @@ def _test_routes() -> APIRouter:
 
 @pytest.fixture(scope="module")
 def client() -> TestClient:
-    app: FastAPI = create_app(Settings(database_url="sqlite://"))  # these routes never touch the database
+    app: FastAPI = create_app(settings_for("sqlite://"))  # these routes never touch the database
     app.include_router(_test_routes(), prefix="/v1/_test")
     return TestClient(app, raise_server_exceptions=False)
 

@@ -9,12 +9,12 @@ from __future__ import annotations
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 
-from notes_api.config import Settings
+from notes_api.config import load_settings
 from notes_api.models import Base
 
 config = context.config
 if not config.get_main_option("sqlalchemy.url"):
-    config.set_main_option("sqlalchemy.url", Settings().database_url.replace("%", "%%"))
+    config.set_main_option("sqlalchemy.url", load_settings().database_url.replace("%", "%%"))
 target_metadata = Base.metadata
 
 

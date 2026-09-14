@@ -7,7 +7,6 @@ models; ``tests/test_schema.py`` proves the migration produces the same schema.
 
 from __future__ import annotations
 
-import json
 import os
 from collections.abc import Iterator
 from datetime import UTC, datetime
@@ -17,11 +16,12 @@ import pytest
 from fastapi import FastAPI
 from sqlalchemy import Engine
 
+from notes_api import uow
 from notes_api.config import Settings
 from notes_api.main import create_app
 from notes_api.models import Base
 from tests.contract_client import ContractClient
-from tests.support import FakeClock, LocalIssuer, Persona
+from tests.support import FakeClock, LocalIssuer, Persona, settings_for
 
 START = datetime(2026, 9, 13, 12, 0, tzinfo=UTC)
 
@@ -39,12 +39,7 @@ def clock() -> FakeClock:
 @pytest.fixture
 def settings(tmp_path: Path, issuer: LocalIssuer) -> Settings:
     url = os.environ.get("NOTES_API_TEST_DATABASE_URL") or f"sqlite:///{tmp_path / 'test.sqlite'}"
-    return Settings(
-        database_url=url,
-        oidc_issuer=issuer.issuer,
-        oidc_audience=issuer.audience,
-        oidc_jwks=json.dumps(issuer.jwks),
-    )
+    return settings_for(url, issuer)
 
 
 @pytest.fixture
@@ -83,3 +78,11 @@ def cara(issuer: LocalIssuer) -> Persona:
 @pytest.fixture(scope="session")
 def dan(issuer: LocalIssuer) -> Persona:
     return issuer.persona("dan", "Dan Whitfield")
+
+
+@pytest.fixture
+def restore_hooks() -> Iterator[None]:
+    """Let a test replace ``uow.hooks.before_begin`` and put the no-op back afterwards."""
+    original = uow.hooks.before_begin
+    yield
+    uow.hooks.before_begin = original

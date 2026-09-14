@@ -112,11 +112,19 @@ class ContractClient:
             "root_path": "",
             "path_params": {},
         }
+        # FastAPI 0.141 wraps included routers in a private route object whose ``matches`` returns no path,
+        # so a response served through one could never be checked. Fail loudly before matching anything.
+        foreign = [type(route).__name__ for route in self.app.routes if not isinstance(route, APIRoute)]
+        if foreign:
+            raise ContractViolation(
+                f"ContractClient cannot see routes registered through include_router ({', '.join(foreign)}); "
+                "register them with app.add_api_route"
+            )
         for route in self.app.routes:
-            if isinstance(route, APIRoute):
-                match, _ = route.matches(scope)
-                if match == Match.FULL:
-                    return route.path
+            assert isinstance(route, APIRoute)
+            match, _ = route.matches(scope)
+            if match == Match.FULL:
+                return route.path
         return None
 
     def _check_headers(self, headers: Mapping[str, Any], response: httpx.Response, where: str) -> None:

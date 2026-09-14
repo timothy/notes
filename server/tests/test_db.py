@@ -32,13 +32,6 @@ def factory(engine: Engine) -> sessionmaker[Session]:
     return make_session_factory(engine)
 
 
-@pytest.fixture
-def restore_hooks() -> Iterator[None]:
-    original = uow.hooks.before_begin
-    yield
-    uow.hooks.before_begin = original
-
-
 def _new_team(name: str) -> Team:
     return Team(id=uuid.uuid4(), name=name, created_at=NOW, updated_at=NOW)
 

@@ -6,9 +6,9 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from notes_api.config import Settings
 from notes_api.main import create_app
 from tests.contract_client import ContractClient, ContractViolation
+from tests.support import settings_for
 
 PROBLEM_JSON = "application/problem+json"
 # Nothing listens on port 1, so connecting is refused at once; the password must never appear in a response.
@@ -23,7 +23,7 @@ def client(app: FastAPI) -> TestClient:
 
 @pytest.fixture
 def unreachable_client() -> Iterator[TestClient]:
-    app = create_app(Settings(database_url=UNREACHABLE_URL))
+    app = create_app(settings_for(UNREACHABLE_URL))
     yield TestClient(app, raise_server_exceptions=False)
     app.state.engine.dispose()
 
