@@ -41,6 +41,40 @@ Sections 2 and 3 of [the design guide](docs/design-guide.md) spell out the rules
 
 These are the price of the guarantee above.
 
+## Two design choices
+
+Two decisions shape everything else here: the contract comes first, and the container is the unit of delivery.
+
+### Contract-first
+
+`openapi.yaml` and [the design guide](docs/design-guide.md) are the product. They were written, reviewed, and released (1.0.0, then 2.0.0) before a line of server code existed, and they change only through their own process: the twelve-check validator, the Redocly lint, the oasdiff gate that fails a pull request on a client-breaking change, and a semantic version on the document. The server under `server/` implements the contract and is never allowed to bend it: request bodies are validated at runtime by the spec's own JSON Schemas, the typed models are generated from the document with a drift check, and the test client checks every response against the declared status, headers, media type, and schema.
+
+What this buys:
+
+- **Behaviour is reviewed as a document, not discovered in code.** Permissions, merge semantics, the error vocabulary, and the acceptance scenarios were argued over in prose and examples, where they are cheap to change, before they became expensive to change in a schema and a service.
+- **Clients never wait for the server.** Prism serves the contract's examples as a mock, so client work started before a backend existed and continues while the server lands slice by slice.
+- **The server cannot drift.** The spec validates requests at runtime, the models are generated from it, every test response is validated against it, and Schemathesis will run over all 47 operations once they exist. A response the contract does not declare fails the test that produced it.
+- **Compatibility is enforced by a machine.** The `/v1` prefix is the compatibility line, `info.version` is semantic, and oasdiff fails any pull request that would break a correctly written client.
+- **Examples do triple duty.** The same examples are served by the mock, validated by the checker against their schemas, and used as byte-exact fixtures in the server's tests; the three-way merge reproduces the spec's diffs character for character.
+- **Documentation is the source, not a copy.** The API reference at https://hweean.com/notes/ is rendered from `openapi.yaml`, so it cannot go stale, and the acceptance table in the design guide doubles as the server's test plan.
+
+The price: a change in behaviour touches the contract, the guide, the checker's tables, and the changelog before it touches code, and the server implements what the document says even where a shortcut would be easier.
+
+### Container-first
+
+The server's deliverable is a container image, not a checkout. One image is built from the repository root (it carries `openapi.yaml`, because the contract is a runtime dependency), pinned by digest to its base images, run as an unprivileged user on a read-only filesystem, and started as a single uvicorn process. The same image applies migrations as a separate step. `compose.yaml` runs PostgreSQL, the migration, and the API with one command; a smoke script asserts the container's contract; and CI lints the Dockerfile, builds the image, scans it for fixable vulnerabilities, and runs that smoke test on every pull request.
+
+What this buys:
+
+- **One artifact from laptop to production.** The image that passes the smoke test in CI is the image that runs locally through compose and would run in a cluster. There is no "works on my machine" and no drift between environments.
+- **The runtime is proven on every pull request.** The smoke test checks what a deployment would otherwise discover the hard way: the process runs as uid 10001 with no capabilities and no privilege escalation, the filesystem is read-only, the probes answer, readiness follows the database down and back up, the schema is at head and migrating again is a no-op, and SIGTERM produces a clean exit.
+- **Security is the default posture.** Non-root, read-only, no capabilities, no shell entrypoint, no uv or test tooling or curl in the runtime, base images pinned by digest and moved by Dependabot, Debian security updates applied at build time, and a Trivy gate that fails the build on any fixable critical or high finding.
+- **Operations are explicit.** Configuration comes from the environment, and a misconfigured container refuses to start instead of running on a stray SQLite file; migrations run once, before the rollout, never at process start; liveness and readiness are separate endpoints, so a database incident takes replicas out of rotation without restarting them.
+- **Onboarding is one command.** `docker compose up --build --wait` gives a contributor the full stack, PostgreSQL included and on the same version CI tests against, with nothing installed but Docker.
+- **Deploy anywhere that runs OCI images.** Kubernetes, Compose, or any other runtime. The constraints the image assumes are written down in [server/README.md](server/README.md) instead of living in someone's head.
+
+The price: building needs Docker with BuildKit, the image is rebuilt when a base image moves, and the inner loop for tests stays on uv because it is faster than a container on macOS.
+
 ## Repository layout
 
 | Path | Purpose |
@@ -55,7 +89,8 @@ These are the price of the guarantee above.
 | `LICENSE` | Apache License 2.0. |
 | `.github/workflows/contract.yml` | GitHub Actions workflow that runs the checker and the Redocly lint on every push to `main` and every pull request, and fails pull requests on client-breaking changes found by oasdiff. |
 | `.github/workflows/docs.yml` | GitHub Actions workflow that builds the API reference with Redocly on every pull request and publishes it to GitHub Pages from `main`. |
-| `server/` | The reference server: a uv project (FastAPI, SQLAlchemy, Alembic) whose plan and task list are in `tasks/`. See [server/README.md](server/README.md). |
+| `server/` | The reference server: a uv project (FastAPI, SQLAlchemy, Alembic). See [server/README.md](server/README.md). |
+| `tasks/` | The approved server plan (`plan.md`) and its task checklist (`todo.md`). |
 | `Dockerfile`, `.dockerignore` | The production image: non-root, read-only, one uvicorn process. The build context is the repository root because the server needs `openapi.yaml`. |
 | `compose.yaml` | The local stack: PostgreSQL 17, the one-shot migration, then the API, with the hardening a deployment should use. |
 | `server/scripts/smoke_image.sh` | Proves the container contract against a built image, locally and in CI. |
@@ -79,11 +114,11 @@ npx @redocly/cli lint openapi.yaml
 
 GitHub Actions runs both commands on every push to `main` and every pull request, and on pull requests also compares `openapi.yaml` with `main` using oasdiff (`.github/workflows/contract.yml`; see [Releases and versioning](#releases-and-versioning)).
 
-The checks are static. Authorization, atomicity, and the merge algorithm are verified by the acceptance scenarios in section 6 of the design guide once a server exists.
+The checks are static. Authorization, atomicity, and the merge algorithm are verified by the server's test suite, which is organised around the acceptance scenarios in section 6 of the design guide and validates every response against the contract; [server/README.md](server/README.md) explains how to run it.
 
 ## Running a mock
 
-[Prism](https://github.com/stoplightio/prism) serves the contract's examples as a mock server, so client work can start before a backend exists:
+[Prism](https://github.com/stoplightio/prism) serves the contract's examples as a mock server, so client work does not wait for the server, which lands slice by slice:
 
 ```sh
 npx --yes @stoplight/prism-cli@5.16.0 mock openapi.yaml --errors
@@ -105,7 +140,7 @@ curl -si http://127.0.0.1:8000/healthz
 docker compose down -v
 ```
 
-The first command builds the image, starts PostgreSQL, applies the schema, and starts the API on `127.0.0.1:8000`. Only the contract's routes under `/v1` and the two probes `/healthz` and `/readyz` exist; the server is a work in progress, so contract routes answer `404` until their slices land. [server/README.md](server/README.md) covers configuration, migrations, probes, deployment constraints, and running the test suite against PostgreSQL.
+The first command builds the image, starts PostgreSQL, applies the schema, and starts the API on `127.0.0.1:8000`. Only the contract's routes under `/v1` and the two probes `/healthz` and `/readyz` exist. The server is a work in progress: the plumbing, schema, and merge engine are in place, and the routes land slice by slice as tracked in [tasks/todo.md](tasks/todo.md), so a contract route answers `404` until its slice is merged. [server/README.md](server/README.md) covers configuration, migrations, probes, deployment constraints, and running the test suite against PostgreSQL.
 
 ## Releases and versioning
 
