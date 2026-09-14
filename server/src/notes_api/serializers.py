@@ -15,7 +15,17 @@ from fastapi.responses import JSONResponse
 
 from notes_api import etags
 from notes_api.merge.three_way import Content, PreviewComputation, proposal_diff
-from notes_api.models import Approval, Comment, EditRequest, Membership, Note, Share, Team, User
+from notes_api.models import (
+    Approval,
+    Comment,
+    EditRequest,
+    Membership,
+    Note,
+    RequestComment,
+    Share,
+    Team,
+    User,
+)
 from notes_api.services.edit_requests import RequestView
 from notes_api.services.permissions import Access
 
@@ -116,6 +126,17 @@ def comment(row: Comment) -> dict[str, Any]:
     return {
         "id": str(row.id),
         "noteId": str(row.note_id),
+        "authorId": str(row.author_id),
+        "body": row.body,
+        "createdAt": timestamp(row.created_at),
+        "updatedAt": timestamp(row.updated_at),
+    }
+
+
+def request_comment(row: RequestComment) -> dict[str, Any]:
+    return {
+        "id": str(row.id),
+        "requestId": str(row.request_id),
         "authorId": str(row.author_id),
         "body": row.body,
         "createdAt": timestamp(row.created_at),

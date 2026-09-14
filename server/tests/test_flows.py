@@ -259,7 +259,7 @@ def test_protect_a_note_and_merge_with_peer_approval(
 ) -> None:
     """Section 5, "Protect a note and merge with peer approval": Ada adds Cara, requires one peer approval,
     is refused a direct edit, proposes instead, Cara approves, Ada merges; then the guide's alternatives and
-    Cara's departure. Cara's request comment waits for slice 12. Every response equals the contract's example
+    Cara's departure. Every response equals the contract's example
     once ids, versions, and timestamps are substituted."""
     ada_id, ben_id, cara_id = me(client, ada), me(client, ben), me(client, cara)
     protected = examples["NoteRunbookProtected"]
@@ -337,6 +337,26 @@ def test_protect_a_note_and_merge_with_peer_approval(
     inbox = client.get("/v1/edit-requests", auth=cara)
     assert [item["id"] for item in inbox.json()["items"]] == [request_id]
     assert inbox.json()["items"][0]["requiredApprovals"] == 1
+
+    # Cara comments on the proposal with the guide's request comment; it never moves the request's ETag.
+    commented = client.post(
+        f"/v1/edit-requests/{request_id}/comments",
+        auth=cara,
+        json=examples["CreateEditRequestCommentRequest"],
+    )
+    assert commented.status_code == 201, commented.text
+    assert commented.json() == {
+        **examples["RequestCommentExample"],
+        "id": commented.json()["id"],
+        "requestId": request_id,
+        "authorId": cara_id,
+        "createdAt": stamp(60),
+        "updatedAt": stamp(60),
+    }
+    assert (
+        commented.headers["Location"] == f"/v1/edit-requests/{request_id}/comments/{commented.json()['id']}"
+    )
+    assert client.get(f"/v1/edit-requests/{request_id}", auth=ada).headers["ETag"] == p1
 
     # 5. Before the approval Ada can neither merge nor supply finalContent.
     early = client.post(

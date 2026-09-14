@@ -114,15 +114,15 @@ Checklist for `tasks/plan.md` (approved 2026-09-13). Each task's full descriptio
 
 ## PR 5c: slice 12 (request comments, the full conformance run, the acceptance audit)
 
-- [ ] T12.1 Request comments CRUD (M) — deps: T11.2.
-- [ ] T12.2 The flow's comment step, the full conformance run, the acceptance audit (M) — deps: T12.1.
-- [ ] T12.3 Docs and bookkeeping (S) — deps: T12.2.
-- [ ] Checkpoint M: all three section 5 flows pass; every operation runs in the conformance suite; the audit finds all 18 rows
+- [x] T12.1 Request comments CRUD (M) — deps: T11.2. AC: a propose-only proposer comments `201` without note `comment` permission and the owners comment; another reader, even with every permission, and strangers are `404`; pages are oldest first with ties by id and cursors bound to the request; a comment reached through another request is `404`; the author edits and owners cannot rewrite; owners delete any and the author their own; an author who lost read is `404` everywhere; closed requests still take comments; a trashed note freezes them for owners after the `412` check and hides them from the proposer; preconditions and body validation as for note comments; the request's and the note's ETags never move; a competing edit is `412`.
+- [x] T12.2 The flow's comment step, the full conformance run, the acceptance audit (M) — deps: T12.1. AC: the "Protect a note" flow includes Cara's `CreateEditRequestCommentRequest` without moving the request's ETag; the conformance fixture seeds a request comment and gives the item operations their own `commentId`; the include filter is gone and a test keeps `OPERATIONS` equal to the document's 47 ids; `tests/test_acceptance_audit.py` reads the eighteen rows from the guide and asserts equality both ways, skipping on partial collections.
+- [x] T12.3 Docs and bookkeeping (S) — deps: T12.2.
+- [x] Checkpoint M: all four workflows green on PR #22 (2026-09-15); all three section 5 flows pass; every operation runs in the conformance suite; the audit finds all 18 rows
 
 ## PR 6: slices 13 and 14
 
-- [ ] T13.1 Full Schemathesis and negative-case replay (M) — deps: T12.1.
-- [ ] T13.2 Acceptance audit and PostgreSQL job (M) — deps: T13.1.
+- [ ] T13.1 Negative-case replay (M) — deps: T12.2. (The Schemathesis run over all 47 operations landed in PR 5c.)
+- [ ] T13.2 PostgreSQL job review and dialect fixes (M) — deps: T13.1. (The acceptance audit landed in PR 5c; the PostgreSQL job has run every suite since PR 1.)
 - [ ] Checkpoint N
 - [ ] T14.1 Server README and repository docs (S) — deps: T13.2.
 - [ ] Checkpoint O: every acceptance row covered, all CI jobs green, documentation complete

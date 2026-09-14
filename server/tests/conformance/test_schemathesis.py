@@ -1,13 +1,13 @@
 """Property-based conformance: every implemented operation against ``openapi.yaml``.
 
 Schemathesis generates requests from the contract, valid and deliberately invalid, and checks that each
-response is a declared status with the declared headers, media type, and body schema. The include list
-grows one slice at a time; an id that matches nothing fails the run loudly. One note, one team, one
-membership, one co-owner, one share, one comment, and one open edit request are seeded so that path
-parameters point at real resources and the 2xx, 409, and 412 branches are reached as well as the 404s.
-Every operation runs as a subtest over that one database in document order; nothing a generated request
-can do closes or removes the seeded rows, because the conditional mutations need an ``If-Match`` equal to
-a stored version and the generated values never are.
+response is a declared status with the declared headers, media type, and body schema. Every operation the
+document declares runs; ``OPERATIONS`` records the 47 ids, and a test keeps the two equal. One note, one
+team, one membership, one co-owner, one share, one comment, one open edit request, and one request comment
+are seeded so that path parameters point at real resources and the 2xx, 409, and 412 branches are reached
+as well as the 404s. Every operation runs as a subtest over that one database in document order; nothing a
+generated request can do closes or removes the seeded rows, because the conditional mutations need an
+``If-Match`` equal to a stored version and the generated values never are.
 
 Two checks are excluded on purpose: ``positive_data_acceptance`` rejects the ladder's own 400, 412, 422,
 and 428 answers to schema-valid but semantically wrong input, and ``ignored_auth`` triples every 2xx to
@@ -76,6 +76,11 @@ OPERATIONS = [
     "updateReviewPolicy",
     "approveEditRequest",
     "revokeEditRequestApproval",
+    "listEditRequestComments",
+    "createEditRequestComment",
+    "getEditRequestComment",
+    "updateEditRequestComment",
+    "deleteEditRequestComment",
 ]
 EXCLUDED_CHECKS = ["positive_data_acceptance", "ignored_auth"]
 MISSING_HEADER_STATUSES = ["400", "401", "403", "406", "415", "422", "428"]
@@ -118,6 +123,11 @@ def conformance_schema(
             "proposedContent": {"title": "Conformance seed", "body": "A proposed body.\n"},
         },
     ).json()
+    request_comment = client.post(
+        f"/v1/edit-requests/{edit_request['id']}/comments",
+        auth=ben,
+        json={"body": "Conformance seed request comment"},
+    ).json()
 
     schema = schemathesis.openapi.from_dict(RAW)
     schema.app = app  # the document's server path "/v1" is kept; the ASGI transport supplies the host
@@ -140,6 +150,17 @@ def conformance_schema(
     schema.config.operations.operations.append(
         OperationConfig(filter_set=only_remove_owner, parameters={"path.userId": cara_id})
     )
+    # commentId serves note comments and request comments alike; the three request-comment item operations
+    # get the seeded request comment while the note-comment operations keep the seeded note comment.
+    request_comment_items = FilterSet()
+    request_comment_items.include(
+        operation_id=["getEditRequestComment", "updateEditRequestComment", "deleteEditRequestComment"]
+    )
+    schema.config.operations.operations.append(
+        OperationConfig(
+            filter_set=request_comment_items, parameters={"path.commentId": request_comment["id"]}
+        )
+    )
     schema.config.generation.update(with_security_parameters=False)
     schema.config.checks.update(excluded_check_names=EXCLUDED_CHECKS)
     schema.config.checks.missing_required_header.expected_statuses = MISSING_HEADER_STATUSES
@@ -150,8 +171,8 @@ def conformance_schema(
     return schema
 
 
-# The include filter must sit on the lazy schema: one applied inside the fixture is discarded.
-conformance = schemathesis.pytest.from_fixture("conformance_schema").include(operation_id=OPERATIONS)
+# Every operation the document declares runs; the test below keeps OPERATIONS equal to that set.
+conformance = schemathesis.pytest.from_fixture("conformance_schema")
 
 
 @conformance.parametrize()
@@ -163,3 +184,14 @@ conformance = schemathesis.pytest.from_fixture("conformance_schema").include(ope
 )
 def test_every_implemented_operation_conforms(case: schemathesis.Case[Any]) -> None:
     case.call_and_validate()
+
+
+def test_the_document_declares_exactly_the_listed_operations() -> None:
+    """The contract's 47 operation ids, so a new or renamed operation shows up here before anywhere else."""
+    declared = {
+        operation["operationId"]
+        for methods in RAW["paths"].values()
+        for method, operation in methods.items()
+        if method in {"get", "post", "patch", "delete", "put"}
+    }
+    assert declared == set(OPERATIONS) and len(OPERATIONS) == 47
