@@ -121,3 +121,128 @@ def test_submit_and_discover_an_edit_request(
     assert detail.json()["proposedContent"] == submission["proposedContent"]
     # The proposer sees the same request; another reader of the note would not.
     assert client.get(f"/v1/edit-requests/{request_id}", auth=ben).json() == detail.json()
+
+
+def test_preview_and_merge_unchanged_or_with_owner_edits(
+    client: ContractClient, examples: dict[str, Any], ada: Persona, ben: Persona
+) -> None:
+    """Section 5, "Preview and merge unchanged or with owner edits": the two alternative merge paths, each on
+    its own submission, then the contract's conflict chain (EditRequestConflicting, PreviewConflict,
+    ProblemMergeConflict, PreviewConflictResolved) resolved by complete finalContent."""
+
+    def submitted() -> tuple[str, str, str, str]:
+        created = client.post("/v1/notes", auth=ada, json=examples["CreateNoteRequest"])
+        note_id, note_etag = str(created.json()["id"]), str(created.headers["ETag"])
+        grant = copy.deepcopy(examples["CreateShareRequest"])
+        grant["recipient"]["id"] = me(client, ben)
+        assert client.post(f"/v1/notes/{note_id}/shares", auth=ada, json=grant).status_code == 201
+        body = copy.deepcopy(examples["CreateEditRequestRequest"])
+        body["baseNoteETag"] = note_etag
+        response = client.post(f"/v1/notes/{note_id}/edit-requests", auth=ben, json=body)
+        assert response.status_code == 201, response.text
+        return note_id, note_etag, str(response.json()["id"]), str(response.headers["ETag"])
+
+    proposed = examples["CreateEditRequestRequest"]["proposedContent"]
+
+    # Path A: preview without a body, then merge the candidate unchanged with the versions it reported.
+    note_id, note_etag, request_id, request_etag = submitted()
+    clean = client.post(f"/v1/edit-requests/{request_id}/preview", auth=ada)
+    assert clean.status_code == 200, clean.text
+    assert clean.json() == {
+        **examples["PreviewClean"],
+        "requestETag": request_etag,
+        "currentNoteETag": note_etag,
+    }
+    plain = {**examples["MergeEditRequestPlain"], "expectedNoteETag": clean.json()["currentNoteETag"]}
+    merged = client.post(
+        f"/v1/edit-requests/{request_id}/merge", auth=ada, if_match=clean.json()["requestETag"], json=plain
+    )
+    assert merged.status_code == 200, merged.text
+    assert merged.json()["note"]["body"] == proposed["body"] and merged.json()["note"]["tags"] == ["release"]
+    assert merged.json()["editRequest"]["status"] == "merged"
+    assert merged.headers["ETag"] == client.get(f"/v1/edit-requests/{request_id}", auth=ada).headers["ETag"]
+
+    # Path B: preview the owner's own edits, then merge with the versions returned by that preview.
+    note_id, note_etag, request_id, request_etag = submitted()
+    refined = client.post(
+        f"/v1/edit-requests/{request_id}/preview", auth=ada, json=examples["PreviewEditRequestRequest"]
+    )
+    assert refined.status_code == 200, refined.text
+    assert refined.json() == {
+        **examples["PreviewWithFinalContent"],
+        "requestETag": request_etag,
+        "currentNoteETag": note_etag,
+    }
+    with_edits = copy.deepcopy(examples["MergeEditRequestWithFinalContent"])
+    with_edits["expectedNoteETag"] = refined.json()["currentNoteETag"]
+    merged = client.post(
+        f"/v1/edit-requests/{request_id}/merge",
+        auth=ada,
+        if_match=refined.json()["requestETag"],
+        json=with_edits,
+    )
+    assert merged.status_code == 200, merged.text
+    result = merged.json()
+    assert result["note"]["body"] == with_edits["finalContent"]["body"]  # "Review metrics and error rates"
+    assert result["editRequest"]["proposedContent"] == proposed  # the proposal still says "Review metrics"
+    assert (
+        result["editRequest"]["mergeRecord"]["content"]
+        == examples["EditRequestMerged"]["mergeRecord"]["content"]
+    )
+    assert result["note"]["tags"] == ["release"]
+    note_v2 = result["noteETag"]
+
+    # The conflict chain: Ben submits against note-v2 while Ada moves the note on to note-v3.
+    conflicting = examples["EditRequestConflicting"]
+    assert result["note"]["body"] == conflicting["baseContent"]["body"]  # note-v2 is the example's base
+    second = client.post(
+        f"/v1/notes/{note_id}/edit-requests",
+        auth=ben,
+        json={
+            "baseNoteETag": note_v2,
+            "proposedContent": conflicting["proposedContent"],
+            "explanation": conflicting["explanation"],
+        },
+    )
+    assert second.status_code == 201, second.text
+    assert second.json()["proposalDiff"] == conflicting["proposalDiff"]
+    second_id, second_etag = second.json()["id"], second.headers["ETag"]
+    v3 = client.patch(
+        f"/v1/notes/{note_id}",
+        auth=ada,
+        if_match=note_v2,
+        json=examples["EditRequestWithdrawn"]["baseContent"],
+    )
+    assert v3.status_code == 200, v3.text
+    conflict = client.post(f"/v1/edit-requests/{second_id}/preview", auth=ada)
+    assert conflict.json() == {
+        **examples["PreviewConflict"],
+        "requestETag": second_etag,
+        "currentNoteETag": v3.headers["ETag"],
+    }
+    blocked = client.post(
+        f"/v1/edit-requests/{second_id}/merge",
+        auth=ada,
+        if_match=second_etag,
+        json={"expectedNoteETag": v3.headers["ETag"]},
+    )
+    assert blocked.status_code == 409 and blocked.json() == examples["ProblemMergeConflict"]
+    resolution = {"finalContent": examples["PreviewConflictResolved"]["candidate"]}
+    resolved = client.post(f"/v1/edit-requests/{second_id}/preview", auth=ada, json=resolution)
+    assert resolved.json() == {
+        **examples["PreviewConflictResolved"],
+        "requestETag": second_etag,
+        "currentNoteETag": v3.headers["ETag"],
+    }
+    landed = client.post(
+        f"/v1/edit-requests/{second_id}/merge",
+        auth=ada,
+        if_match=second_etag,
+        json={"expectedNoteETag": v3.headers["ETag"], **resolution},
+    )
+    assert landed.status_code == 200, landed.text
+    assert landed.json()["note"]["title"] == "Release runbook (2026)"
+    assert landed.json()["note"]["body"] == resolution["finalContent"]["body"]
+    assert landed.json()["editRequest"]["proposedContent"] == conflicting["proposedContent"]
+    assert landed.json()["editRequest"]["mergeRecord"]["content"] == resolution["finalContent"]
+    assert landed.json()["note"]["tags"] == ["release"]

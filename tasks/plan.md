@@ -104,6 +104,7 @@ Check ladder, in order: `401`; request shape (`415`, `400 malformed_request`, `4
 - Search folds with `casefold()` and does not NFC-normalize.
 - Comments (added 2026-09-14): an identical-body `PATCH` is a `200` no-op; a comment reached through another note's path is `404` before any `403`; owners of a trashed note read its comments, and every comment mutation on a trashed note is `409 note_not_active` after the `412` check.
 - Edit requests (added 2026-09-14): `412` precedes both lifecycle `409`s and `request_not_open` precedes `note_not_active`; every version mismatch carries a detail naming the input; an owner who proposed may withdraw and reject their own request while an owner who did not propose gets `403` on withdraw; owners list and read a trashed note's requests; `withdrawEditRequest` never reads the body; a reader who is neither owner nor proposer gets an empty note-scoped page; a revision's content change means the stored proposal differs afterwards, an identical resubmission keeps the ETag, and `explanation: ""` is stored; reject treats an empty body as omitted and a JSON `null` body as `422` at `""`.
+- Preview and merge (added 2026-09-14): the request's `If-Match` is checked before `expectedNoteETag`, both `412` with a detail naming the input; lifecycle `409`s precede `approval_required`, which precedes `merge_conflict`; `MergeResult.note` is the merger's own view; `finalContent` under `peer_approval` on a protected note is `422` even when it equals the automatic candidate; preview treats an empty body as omitted and a JSON `null` body as `422` at `""`.
 
 ## Task list
 
@@ -262,6 +263,8 @@ Verify: `tests/test_edit_requests.py` tagged `acceptance("Lifecycle")` and `acce
 **Checkpoint I.**
 
 ### Slice 9: preview and merge under self_merge (PR 4c)
+
+(Amended 2026-09-14: preview reuses `edit_requests.inspect(lock=False)`, the joined select, and runs the pure engine on the pair; merge reuses `inspect(lock=True)` and rechecks the request's `If-Match` before `expectedNoteETag`, both `412` with a detail naming the input, then `request_not_open`, `note_not_active`, `422 /finalContent` under peer approval, `approval_required`, and `merge_conflict`; `MergeResult.note` is the merger's view; the `merge_conflict` detail was aligned with the contract's example; the peer-approval count and freezing are exercised here with seeded rows, so slice 11 adds only the endpoints.)
 
 **T9.1 POST /edit-requests/{requestId}/preview (M).** Owner else `403` or `404`; one joined `SELECT`; closed `409 request_not_open`; trashed `409 note_not_active`; body optional; `finalContent` under `peer_approval` on a protected note is `422 /finalContent` (wired now, exercised in slice 11); returns `requestETag`, `currentNoteETag`, and the engine's preview result; no writes.
 AC: the `PreviewClean`, `PreviewConflict`, and `PreviewConflictResolved` shapes are reproduced from seeded rows, including retained conflicts with `usedFinalContent: true`; two consecutive previews change no version or `updatedAt`; after a note PATCH, `currentNoteETag` reflects the new version and the preview compares against the new body.

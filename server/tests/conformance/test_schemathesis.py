@@ -68,6 +68,8 @@ OPERATIONS = [
     "reviseEditRequest",
     "withdrawEditRequest",
     "rejectEditRequest",
+    "previewEditRequest",
+    "mergeEditRequest",
 ]
 EXCLUDED_CHECKS = ["positive_data_acceptance", "ignored_auth"]
 MISSING_HEADER_STATUSES = ["400", "401", "403", "406", "415", "422", "428"]
