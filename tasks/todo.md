@@ -49,18 +49,29 @@ Checklist for `tasks/plan.md` (approved 2026-09-13). Each task's full descriptio
 - [x] T3.2 Memberships with last-admin atomicity (M) — deps: T3.1. AC: nonmember listing `403`; default role `member`; unknown user `422 /userId`; duplicate `409`; last admin cannot be demoted or leave; `403` before the target's `404`; hook and thread races leave exactly one admin.
 - [x] Checkpoint D: "Directory and teams" row complete; all four workflows green on PR #13 (2026-09-14)
 
-## PR 3: slices 4, 5, and 6
+## PR 3a: slice 4 (notes core; slices 4, 5, and 6 split into PR 3a, 3b, and 3c on 2026-09-14)
 
-- [ ] T4.1 Permission resolver and note serializer (M) — deps: T0.5.
-- [ ] T4.2 POST /notes and GET /notes/{noteId} (M) — deps: T4.1.
-- [ ] T4.3 PATCH /notes/{noteId} (M) — deps: T4.2. Starts the Schemathesis include list.
-- [ ] Checkpoint E
-- [ ] T5.1 Trash, restore, expiry, purge CLI (M) — deps: T4.3.
-- [ ] T5.2a GET /notes: scope, state, keyset, dedupe (M) — deps: T5.1, T2.3.
+- [x] T4.0 Request log and request id (S) — deps: none. AC: one JSON line per request with time, request id, method, route, path, status, code, user, duration; probes unlogged; `X-Request-Id` kept when simple, replaced otherwise, echoed on every response; no token, query string, or body text in the output.
+- [x] T4.0b Ladder alignment for teams (S) — deps: none. AC: team bodies are parsed before the lock; a non-admin's malformed body is `422`.
+- [x] T4.1 Permission resolver and note serializers (M) — deps: T0.5. AC: owner or union of direct and team shares; team roles grant nothing; `visible` over active, trashed, and expired at the boundary; `Note` and `NoteSummary` validate.
+- [x] T4.2 POST /notes and GET /notes/{noteId} (M) — deps: T4.1. AC: the contract's `CreateNoteRequest` round-trips with equal ETags; defaults; every body rule at its pointer; a stranger gets `404`, a reader `200`.
+- [x] T4.3 PATCH /notes/{noteId} and the Schemathesis start (M) — deps: T4.2. AC: effective changes advance the ETag, no-ops do not; `428`/`400`/`412`/`409` in order with nothing written; a competitor makes the primary `412`; an owner added between read and write makes a body PATCH `409 direct_edit_not_allowed`; fifteen operations conform.
+- [x] T4.4 Docs and bookkeeping (S) — deps: T4.3.
+- [ ] Checkpoint E: all four workflows green on the PR
+
+## PR 3b: slice 5 (trash, restore, purge, list and search)
+
+- [ ] T5.1 Trash, restore, expiry, purge command, smoke purge check (M) — deps: T4.3.
+- [ ] T5.2a GET /notes: scope, state, keyset, dedupe (M) — deps: T5.1, T2.5.
 - [ ] T5.2b GET /notes: q, tag, teamId (M) — deps: T5.2a.
+- [ ] T5.3 Docs and bookkeeping (S) — deps: T5.2b.
 - [ ] Checkpoint F
+
+## PR 3c: slice 6 (shares and access paths)
+
 - [ ] T6.1 Shares CRUD (M) — deps: T5.2b.
-- [ ] T6.2 Overlapping grants, revocation, admins gain nothing (M) — deps: T6.1. Section 5 "Create and share" end to end.
+- [ ] T6.2 Overlapping grants, revocation, isolation, and the section 5 "Create and share" flow (M) — deps: T6.1.
+- [ ] T6.3 Docs and bookkeeping (S) — deps: T6.2.
 - [ ] Checkpoint G
 
 ## PR 4: slices 7, 8, and 9

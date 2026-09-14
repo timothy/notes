@@ -82,6 +82,14 @@ Requests to `/v1` carry `Authorization: Bearer <access token>`. The token must b
 
 The validated `(iss, sub)` maps to one local user, created on first contact with `displayName` taken from the `name` claim, else `preferred_username`, else `user-` and the first eight characters of `sub`, cut to 200 code points. Concurrent first requests create one row: the insert runs under a savepoint and a constraint violation re-selects the winner.
 
+### Request log
+
+Every request except the probes writes one JSON line to stdout (`docker compose logs api` shows them): `time`, `request_id`, `method`, `route` (the matched template, `null` for an unknown route), `path`, `status`, `code` (the Problem code, `null` on success), `user` (the caller's id once authenticated), and `duration_ms`. Never the query string, headers, or bodies, so search text, tokens, and note content cannot reach the logs. An incoming `X-Request-Id` is kept when it matches `^[A-Za-z0-9._-]{1,128}$` and replaced otherwise; every response echoes the id in `X-Request-Id`.
+
+### Conformance run
+
+[`tests/conformance/test_schemathesis.py`](tests/conformance/test_schemathesis.py) runs Schemathesis over every implemented operation: requests are generated from the contract, valid and deliberately invalid, and each response must be a declared status with the declared headers, media type, and body schema. The `OPERATIONS` list grows with each slice, and an id that matches nothing fails the run. Two checks are excluded on purpose: `positive_data_acceptance`, because it rejects the ladder's own `400`, `412`, `422`, and `428` answers to schema-valid but semantically wrong input, and `ignored_auth`, because `tests/test_auth.py` already pins the `401` and the check would triple every successful request.
+
 ### Interpretations pinned by tests
 
 Where the contract leaves a choice, the server's choice is fixed by a test and listed here.
@@ -92,6 +100,9 @@ Where the contract leaves a choice, the server's choice is fixed by a test and l
 - Cursors are bound to the caller as well as the collection, filters, and limit; another user cannot continue your page.
 - Membership mutations check that the caller may act (`403`) before whether the target membership exists (`404`), so a nonmember cannot probe who belongs to a team. A nonmember deleting their own absent membership is `404`.
 - A rename to the same name and a role change to the same role are `200` no-ops that leave `updatedAt` unchanged.
+- Request bodies are validated before visibility and authorization (the ladder is `401`, request shape, then `404` and `403`), so a malformed body is `422` for anyone, and no lock is held while a body is read.
+- `GET /notes/{noteId}` never returns `403`: a note the caller cannot read is `404`, a trashed note is visible to its owners only, and an expired note to nobody.
+- A `PATCH /notes/{noteId}` that changes nothing returns the existing representation and ETag with `updatedAt` unchanged. The version check (`412`) precedes the lifecycle check (`409`), so a stale ETag on a trashed note is `412`.
 - A team's mutations lock the team row first, so two admins demoting or removing each other, or the last admin leaving twice, are decided one at a time: the second attempt is `409 last_admin` when it would leave no admin, or `403` when the first attempt already took the caller's admin role.
 - Search folds with `casefold()` and does not NFC-normalize (from slice 5).
 
