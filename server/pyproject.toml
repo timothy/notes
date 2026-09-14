@@ -24,6 +24,10 @@ dependencies = [
     "uvicorn>=0.52",
 ]
 
+[project.scripts]
+# Operator commands, installed into the image's venv: `notes-api purge-expired` for an external scheduler.
+notes-api = "notes_api.cli:main"
+
 [build-system]
 requires = ["uv_build>=0.11.7,<0.12.0"]
 build-backend = "uv_build"

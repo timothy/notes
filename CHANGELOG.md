@@ -16,9 +16,11 @@ Each release is an annotated tag `v<version>` on `main`, so a frozen copy of any
   `DATABASE_URL` and the `OIDC_*` settings, verifies bearer tokens (RS256 and ES256, inline JWKS or JWKS URL), serves
   `GET /me`, `GET /users`, and `GET /users/{userId}` with keyset cursors, the team operations (`/teams`,
   `/teams/{teamId}`) and the membership operations (`/teams/{teamId}/members`, `/teams/{teamId}/members/{userId}`)
-  with last-admin protection under the team lock, note creation, reading, and conditional updates with strong ETags
-  (`POST /notes`, `GET /notes/{noteId}`, `PATCH /notes/{noteId}`), a JSON request log with `X-Request-Id`, a
-  Schemathesis conformance run over every implemented operation, carries a development token issuer
+  with last-admin protection under the team lock, notes with strong ETags (`POST /notes`, `GET /notes`,
+  `GET/PATCH/DELETE /notes/{noteId}`, `POST /notes/{noteId}/restore`: create, read, conditional update, trash with a
+  30-day recovery window, restore, list and search), a `notes-api purge-expired` command for an external scheduler, a
+  JSON request log with `X-Request-Id`, a Schemathesis conformance run over every implemented operation, carries a
+  development token issuer
   (`python -m notes_api.dev_issuer`) for the compose stack and the smoke test, and answers `GET /healthz` and
   `GET /readyz` outside the contract for container probes. No contract change.
 

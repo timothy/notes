@@ -8,7 +8,8 @@
 # with no capabilities, no-new-privileges, uvicorn as PID 1, a read-only root filesystem and a writable /tmp,
 # and without uv or test tooling; the probes and the contract's 404 behave; GET /v1/me is 401 with the bearer
 # challenge without a token and 200 with a minted one; readiness follows the database; the schema is at head
-# and migrating again is a no-op; SIGTERM stops the api cleanly; the source label is set.
+# and migrating again is a no-op; `notes-api purge-expired` runs from the image; SIGTERM stops the api
+# cleanly; the source label is set.
 set -euo pipefail
 
 : "${NOTES_API_IMAGE:?set NOTES_API_IMAGE to the image under test, e.g. notes-api:dev}"
@@ -142,14 +143,18 @@ step "7 schema at head; migrating again is a no-op"
 compose run --rm migrate alembic -c /app/alembic.ini current 2>/dev/null | grep -q '(head)' || fail "schema is not at head"
 compose run --rm migrate >/dev/null || fail "re-running the migration failed"
 
-step "8 SIGTERM stops the api cleanly"
+step "8 the purge command runs from the image against the stack's database"
+purged=$(compose run --rm -T api notes-api purge-expired) || fail "notes-api purge-expired failed"
+[ "$purged" = "purged 0 expired notes" ] || fail "unexpected purge output: '$purged'"
+
+step "9 SIGTERM stops the api cleanly"
 started=$(date +%s)
 compose stop -t 25 api >/dev/null
 elapsed=$(( $(date +%s) - started ))
 [ "$(docker inspect -f '{{.State.ExitCode}}' "$(compose ps -aq api)")" = 0 ] || fail "api exit code is not 0 after SIGTERM"
 [ "$elapsed" -lt 25 ] || fail "api took ${elapsed}s to stop (SIGKILL suspected)"
 
-step "9 image metadata"
+step "10 image metadata"
 label=$(docker image inspect -f '{{index .Config.Labels "org.opencontainers.image.source"}}' "$NOTES_API_IMAGE")
 [ "$label" = https://github.com/timothy/notes ] || fail "source label is '$label'"
 
