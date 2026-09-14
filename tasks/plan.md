@@ -310,6 +310,8 @@ Verify: `tests/test_peer_approval.py` tagged `acceptance("Approvals")` and `acce
 
 ### Slice 12: request comments (PR 5c)
 
+(Amended 2026-09-14: `services/request_comments.py` and `routers/request_comments.py` mirror the note comments with the inspect rule as authorization and only the note's lifecycle as a refusal, so closed requests still take comments; T13.1's include-list removal and T13.2's acceptance audit landed here, since this slice completes the 47 operations and the eighteen rows.)
+
 **T12.1 Request comments CRUD (M).** List and get for inspectors (`404` otherwise); create for inspectors without note `comment` permission, allowed on closed requests, trashed `409`; PATCH by the author only (owners `403`) with the comment ETag; DELETE by any owner or the author; `edit_requests.version` never touched; `Location`.
 AC: a propose-only proposer comments `201` and another reader gets `404`; owner PATCH of the proposer's comment is `403` and owner DELETE is `204`; the request ETag is identical before and after create, update, and delete.
 Verify: `tests/test_request_comments.py` tagged `acceptance("Request comments")`. Deps: T11.2. Files: `services/request_comments.py`, `routers/request_comments.py`.
@@ -317,6 +319,8 @@ Verify: `tests/test_request_comments.py` tagged `acceptance("Request comments")`
 **Checkpoint M.** All three section 5 flows pass.
 
 ### Slice 13: conformance sweep (PR 6 with slice 14)
+
+(Amended 2026-09-14: the Schemathesis run over all 47 operations and the acceptance audit landed in PR 5c; T13.1 keeps the negative-case replay and T13.2 the PostgreSQL job review and any dialect fixes.)
 
 **T13.1 Full Schemathesis and negative-case replay (M).** Remove the include filter; load `openapi.yaml` with `app=`, override the base URL to end in `/v1`, inject the bearer header, run status, schema, header, and content-type conformance plus negative-data rejection with bounded examples and a fixed seed. Replay every `tests/negative_cases.yaml` request-schema payload against a real endpoint (must fail is `422`, must pass is not `422`).
 AC: zero Schemathesis failures across 47 operations; every request-schema fixture maps to an endpoint and behaves; the sweep fits the CI time budget.
