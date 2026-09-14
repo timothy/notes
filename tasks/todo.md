@@ -61,11 +61,11 @@ Checklist for `tasks/plan.md` (approved 2026-09-13). Each task's full descriptio
 
 ## PR 3b: slice 5 (trash, restore, purge, list and search)
 
-- [ ] T5.1 Trash, restore, expiry, purge command, smoke purge check (M) — deps: T4.3.
-- [ ] T5.2a GET /notes: scope, state, keyset, dedupe (M) — deps: T5.1, T2.5.
-- [ ] T5.2b GET /notes: q, tag, teamId (M) — deps: T5.2a.
-- [ ] T5.3 Docs and bookkeeping (S) — deps: T5.2b.
-- [ ] Checkpoint F
+- [x] T5.1 Trash, restore, expiry, purge command, smoke purge check (M) — deps: T4.3. AC: trash removes shares and the `204` carries the trash ETag; a repeat is idempotent; restore is private and advances the ETag; `404` at the expiry instant, `200` a microsecond earlier; `notes-api purge-expired` deletes exactly the expired notes and their children and runs from the image in the smoke test.
+- [x] T5.2a GET /notes: scope, state, keyset, dedupe (M) — deps: T5.1, T2.5. AC: overlapping grants list once; `scope` partitions; `state=trashed` is the owner's unexpired trash; ties page by id; revocation between pages hides the note; a page costs a bounded number of statements.
+- [x] T5.2b GET /notes: q, tag, teamId (M) — deps: T5.2a. AC: folded literal search over title or body with literal wildcards; exact AND tags; every invalid parameter is `422` naming it; `teamId` selects team-shared notes for anyone who can read them and grants nothing.
+- [x] T5.3 Docs and bookkeeping (S) — deps: T5.2b.
+- [ ] Checkpoint F: all four workflows green on the PR
 
 ## PR 3c: slice 6 (shares and access paths)
 
