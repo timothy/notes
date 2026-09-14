@@ -159,6 +159,29 @@ def _absolutize(schema: Any) -> Any:
     return schema
 
 
+def nul_character_errors(instance: object) -> list[FieldError]:
+    """One error per string anywhere in ``instance`` that contains U+0000.
+
+    The schemas do not forbid it, but PostgreSQL text cannot store it, so the server rejects it up front
+    with the same shape as a schema violation instead of failing inside the database.
+    """
+    errors: list[FieldError] = []
+
+    def walk(value: object, path: tuple[str | int, ...]) -> None:
+        if isinstance(value, str):
+            if "\x00" in value:
+                errors.append(FieldError("body", json_pointer(path), "must not contain NUL characters"))
+        elif isinstance(value, dict):
+            for key, item in value.items():
+                walk(item, (*path, str(key)))
+        elif isinstance(value, list):
+            for index, item in enumerate(value):
+                walk(item, (*path, index))
+
+    walk(instance, ())
+    return errors
+
+
 def json_pointer(path: Iterable[str | int]) -> str:
     """RFC 6901 pointer for a jsonschema path; the empty path is the whole document."""
     return "".join(f"/{escape_token(str(part))}" for part in path)

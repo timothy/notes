@@ -14,7 +14,7 @@ from typing import Any, cast
 import anyio
 from fastapi import Request
 
-from notes_api.contract import Contract
+from notes_api.contract import Contract, nul_character_errors
 from notes_api.http.problems import MalformedRequest, UnsupportedMediaType, ValidationFailed
 
 JSON_MEDIA_TYPE = "application/json"
@@ -36,6 +36,9 @@ def parse_body(request: Request, schema_name: str, *, required: bool = True) -> 
             raise MalformedRequest(detail="The request body is not well-formed JSON.") from exc
     contract = cast(Contract, request.app.state.contract)
     errors = contract.validate_body(schema_name, data)
+    # The one rule beyond the schema: PostgreSQL text cannot hold U+0000, so no stored string may either.
+    known = {error.pointer for error in errors}
+    errors += [error for error in nul_character_errors(data) if error.pointer not in known]
     if errors:
-        raise ValidationFailed(errors)
+        raise ValidationFailed(sorted(errors, key=lambda error: error.pointer))
     return cast(dict[str, Any], data)

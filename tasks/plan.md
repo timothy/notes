@@ -100,6 +100,7 @@ Check ladder, in order: `401`; request shape (`415`, `400 malformed_request`, `4
 - A missing `typ` header is accepted; a present one must be `at+jwt` or `JWT` (case-insensitive).
 - Cursors are bound to the caller as well as the collection, filters, and limit.
 - Membership mutations check that the caller may act (`403`) before whether the target membership exists (`404`), so a nonmember cannot probe who belongs to a team.
+- Request strings may not contain U+0000 (`422` at the field's pointer); PostgreSQL text cannot store it. Added 2026-09-14 after the Schemathesis run produced a 500 on PostgreSQL.
 - Search folds with `casefold()` and does not NFC-normalize.
 
 ## Task list

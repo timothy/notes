@@ -110,6 +110,7 @@ def test_tags_keep_the_order_they_were_supplied_in(client: ContractClient, ada: 
         ({"title": "x", "id": str(uuid.uuid4())}, ["/id"]),
         ({"title": "x", "authorId": str(uuid.uuid4())}, ["/authorId"]),
         ({"title": "x", "createdAt": START_TS, "isOwner": True}, ["/createdAt", "/isOwner"]),
+        ({"title": "nul\x00", "body": "a\x00b", "tags": ["ok", "\x00"]}, ["/body", "/tags/1", "/title"]),
     ],
     ids=[
         "blank title",
@@ -124,6 +125,7 @@ def test_tags_keep_the_order_they_were_supplied_in(client: ContractClient, ada: 
         "id supplied",
         "authorId supplied",
         "unknown fields",
+        "NUL characters",
     ],
 )
 def test_create_validates_the_body_against_the_contract(

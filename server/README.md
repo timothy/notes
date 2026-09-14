@@ -102,6 +102,7 @@ Where the contract leaves a choice, the server's choice is fixed by a test and l
 - A rename to the same name and a role change to the same role are `200` no-ops that leave `updatedAt` unchanged.
 - Request bodies are validated before visibility and authorization (the ladder is `401`, request shape, then `404` and `403`), so a malformed body is `422` for anyone, and no lock is held while a body is read.
 - `GET /notes/{noteId}` never returns `403`: a note the caller cannot read is `404`, a trashed note is visible to its owners only, and an expired note to nobody.
+- No string in a request body may contain U+0000: it is `422` at the field's pointer with detail `must not contain NUL characters`, the one rule the server adds beyond the schemas, because PostgreSQL text cannot store it (found by the conformance run).
 - A `PATCH /notes/{noteId}` that changes nothing returns the existing representation and ETag with `updatedAt` unchanged. The version check (`412`) precedes the lifecycle check (`409`), so a stale ETag on a trashed note is `412`.
 - A team's mutations lock the team row first, so two admins demoting or removing each other, or the last admin leaving twice, are decided one at a time: the second attempt is `409 last_admin` when it would leave no admin, or `403` when the first attempt already took the caller's admin role.
 - Search folds with `casefold()` and does not NFC-normalize (from slice 5).
