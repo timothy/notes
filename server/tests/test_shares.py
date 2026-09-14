@@ -1,7 +1,7 @@
 """Acceptance row "Permission combinations": "Exercise read-only, comment-only input, proposal-only input,
 and both. Implied read is returned; proposal-only comment creation fails. Unknown/empty/duplicate permission
 entries fail schema validation. `effectivePermissions` and `isOwner` match the caller's actual rights."
-(Comment creation arrives in slice 7.)"""
+(Proposal-only comment creation is asserted in ``tests/test_comments.py``.)"""
 
 from __future__ import annotations
 

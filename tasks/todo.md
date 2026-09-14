@@ -74,19 +74,28 @@ Checklist for `tasks/plan.md` (approved 2026-09-13). Each task's full descriptio
 - [x] T6.3 Docs and bookkeeping (S) — deps: T6.2.
 - [x] Checkpoint G: all four workflows green on PR #16 (2026-09-14); the "Create and share" flow passes end to end
 
-## PR 4: slices 7, 8, and 9
+## PR 4a: slice 7 (comments; slices 7, 8, and 9 split into PR 4a, 4b, and 4c on 2026-09-14)
 
-- [ ] T7.1 List, get, create comments (S) — deps: T6.2.
-- [ ] T7.2 Update and delete comments (M) — deps: T7.1.
-- [ ] Checkpoint H
+- [x] T7.1 List, get, create comments (S) — deps: T6.2. AC: readers list and get `200` oldest first (`createdAt ASC, id ASC`, ties by id); a read-only or proposal-only recipient creates `403`; a comment reached through another note's path is `404`; creating a comment leaves the note ETag unchanged; owners of a trashed note read its comments and create `409 note_not_active`; the Create-and-share flow's comment step passes.
+- [x] T7.2 Update and delete comments (M) — deps: T7.1. AC: owner PATCH of another's comment is `403` and owner DELETE is `204`; an author downgraded to read gets `200` on GET and `403` on PATCH and DELETE; an identical body is a no-op keeping the ETag; a stale comment ETag is `412`, a missing one `428`, a malformed one `400`; a trashed note is `409 note_not_active` after the version check; a competing edit makes the second `412`; the conformance run covers the five comment operations.
+- [x] T7.3 Docs and bookkeeping (S) — deps: T7.2.
+- [ ] Checkpoint H: all four workflows green on the PR
+
+## PR 4b: slice 8 (edit requests)
+
 - [ ] T8.1 POST /notes/{noteId}/edit-requests (M) — deps: T7.2, T1.1.
 - [ ] T8.2 GET /edit-requests/{requestId} and serializer (M) — deps: T8.1.
 - [ ] T8.3 Note-scoped list and inbox (M) — deps: T8.2.
 - [ ] T8.4 Revise, withdraw, reject (M) — deps: T8.3.
+- [ ] T8.5 Docs, the "Submit and discover" flow, and bookkeeping (S) — deps: T8.4.
 - [ ] Checkpoint I
+
+## PR 4c: slice 9 (preview and merge)
+
 - [ ] T9.1 POST /edit-requests/{requestId}/preview (M) — deps: T8.4, T1.3.
 - [ ] T9.2 POST /edit-requests/{requestId}/merge (M) — deps: T9.1.
 - [ ] T9.3 Review race tests (M) — deps: T9.2.
+- [ ] T9.4 Docs, the "Preview and merge" flow, and bookkeeping (S) — deps: T9.3.
 - [ ] Checkpoint J: section 5 "Submit" and "Preview and merge" end to end
 
 ## PR 5: slices 10, 11, and 12

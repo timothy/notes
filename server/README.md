@@ -109,10 +109,15 @@ Where the contract leaves a choice, the server's choice is fixed by a test and l
 - A `PATCH /notes/{noteId}` that changes nothing returns the existing representation and ETag with `updatedAt` unchanged. The version check (`412`) precedes the lifecycle check (`409`), so a stale ETag on a trashed note is `412`.
 - A team's mutations lock the team row first, so two admins demoting or removing each other, or the last admin leaving twice, are decided one at a time: the second attempt is `409 last_admin` when it would leave no admin, or `403` when the first attempt already took the caller's admin role.
 - Search folds with `casefold()` and does not NFC-normalize (from slice 5).
+- Comments: a `PATCH` with an identical body is a `200` no-op that keeps the ETag and `updatedAt`; a comment id that does not belong to the note in the path is `404` before any `403` (every reader may list a note's comments, so there is nothing to hide, and the author rule needs the row); the body is validated before the precondition, `403` precedes `428`, and the version check (`412`) precedes the lifecycle check (`409 note_not_active`), as for notes. Owners of a trashed note still list and read its comments; every comment mutation on a trashed note is `409`.
 
 ### Notes, permissions, and shares
 
 Only owners (the author and any co-owners) may change a note, manage its shares, trash and restore it. Anyone else holds the union of their direct share and the shares addressed to teams they currently belong to: `read` is implied by any share, `comment` and `propose_edit` come from the share. Team roles grant nothing beyond the share. Every note representation reports the caller's own `effectivePermissions` in canonical order and an `isOwner` flag. A share's recipient must exist and must not already own the note (`422` at `/recipient/id`); a second share for the same recipient is `409 duplicate_share`; shares carry no ETag, change nothing about the note, and vanish when the note is trashed.
+
+### Comments
+
+Anyone who can read a note can list and read its comments (`GET /notes/{noteId}/comments`, oldest first by `createdAt ASC, id ASC`, and `GET /notes/{noteId}/comments/{commentId}`), including recipients without `comment` permission. Adding one (`POST`) needs current `comment` permission, which owners always have; a read-only or proposal-only recipient gets `403`. Each comment carries its own strong ETag: `POST` answers `201` with `Location` and `ETag`, and `PATCH` and `DELETE` require `If-Match` with it. Only the author edits a comment, and only while they still hold `comment` permission; an owner cannot rewrite someone else's comment (`403`) but may delete any comment, and the author may delete their own under the same permission rule. Deletion is permanent (`204`, no body). A comment reached through another note's path is `404`. Comments never change the note's ETag or `updatedAt`. On a trashed note, owners still list and read the comments while adding, editing, and deleting are `409 note_not_active`; other former readers see `404`; the comments survive trash and restore.
 
 ### Purging expired notes
 
