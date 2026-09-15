@@ -123,6 +123,6 @@ Checklist for `tasks/plan.md` (approved 2026-09-13). Each task's full descriptio
 
 - [x] T13.1 Negative-case replay (M) — deps: T12.2. (The Schemathesis run over all 47 operations landed in PR 5c.)
 - [x] T13.2 PostgreSQL job review and dialect fixes (M) — deps: T13.1. (The acceptance audit landed in PR 5c; the PostgreSQL job has run every suite since PR 1.)
-- [ ] Checkpoint N
+- [x] Checkpoint N: PR #23 is green on SQLite and PostgreSQL with the replay included
 - [x] T14.1 Server README and repository docs (S) — deps: T13.2.
-- [ ] Checkpoint O: every acceptance row covered, all CI jobs green, documentation complete
+- [x] Checkpoint O: every acceptance row covered, all CI jobs green, documentation complete
