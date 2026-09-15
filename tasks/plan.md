@@ -118,7 +118,7 @@ Verify: run the CI steps locally. Deps: none. Files: `server/pyproject.toml`, `s
 
 **T0.2 Contract loader, generated models, drift check (M).** `contract.py` loads `openapi.yaml`, builds the `referencing` registry like the checker, exposes `validate_body(schema_name, instance)` returning `FieldError` dicts (unknown keys reported individually as `unknown field`; `required` reported at the missing key's pointer; otherwise `absolute_path` as a JSON Pointer) with a cached `Draft202012Validator` per schema and the format checker on. Generate `generated/schemas.py` (pydantic v2, annotated, field constraints, standard collections, strict nullable, no timestamp, never unique-items-as-set); a script regenerates to a temp file and diffs.
 AC: every `tests/negative_cases.yaml` must_fail and must_pass payload gets the expected verdict through `validate_body`; the `ProblemValidationFailed` example's two errors (`/title`, `/authorId` unknown field) are reproduced from `{"title": "   ", "authorId": "..."}` against `CreateNote`; the drift check fails when the generated file is edited.
-Verify: `tests/test_contract_loader.py`. Deps: T0.1. Files: `contract.py`, `generated/schemas.py`, `server/scripts/gen_models.sh`.
+Verify: `tests/test_contract_loader.py`. Deps: T0.1. Files: `contract.py`, `generated/schemas.py`, `server/scripts/gen_models.py`.
 
 **T0.3 Problems, middleware, body parser, If-Match parser (M).** `http/problems.py` exception hierarchy and handlers (Problem, `RequestValidationError` split into `400 malformed_request` for `json_invalid` versus `422` with location from `loc[0]`, `HTTPException` 404/405 to `404 not_found`, last-resort 500); ASGI middleware for `Cache-Control`; `http/bodies.py::parse_body(request, schema_name, required)`; `etags.py::parse_if_match`, `new_version`, `quote`.
 AC: malformed JSON `400`, wrong media type `415`, unknown field `422` with pointer, missing `If-Match` `428`, `W/"x"`, `*`, and `"a", "b"` `400` with `errors[0].pointer == "If-Match"`; every response including 401, 404, 405, and 500 carries `Cache-Control: no-store` and errors are `application/problem+json`; 401 carries the bearer challenge, with `error="invalid_token"` when a token was present.
@@ -320,7 +320,7 @@ Verify: `tests/test_request_comments.py` tagged `acceptance("Request comments")`
 
 ### Slice 13: conformance sweep (PR 6 with slice 14)
 
-(Amended 2026-09-14: the Schemathesis run over all 47 operations and the acceptance audit landed in PR 5c; T13.1 keeps the negative-case replay and T13.2 the PostgreSQL job review and any dialect fixes.)
+(Amended 2026-09-14: the Schemathesis run over all 47 operations and the acceptance audit landed in PR 5c; T13.1 keeps the negative-case replay and T13.2 the PostgreSQL job review and any dialect fixes. Amended again for PR 6: the replay in `tests/conformance/test_negative_replay.py` derives the nineteen body-taking operations and their schemas from the document, seeds a note with two owners, a proposal-only share, an open request, comments, a team, and an unattached user, substitutes the fixtures' placeholder identifiers and ETags with live ones, and asserts `422 validation_failed` with body-located errors for every must-fail payload and a 2xx for every must-pass payload: 76 cases plus two inventory tests pinning the response-side fixture schemas and the three body operations without fixtures. T13.2 needed no code change and no workflow step: the migration on PostgreSQL is proven by `tests/test_schema.py` under the PostgreSQL job and by the image smoke test, and every locking select is a bare select before any join.)
 
 **T13.1 Full Schemathesis and negative-case replay (M).** Remove the include filter; load `openapi.yaml` with `app=`, override the base URL to end in `/v1`, inject the bearer header, run status, schema, header, and content-type conformance plus negative-data rejection with bounded examples and a fixed seed. Replay every `tests/negative_cases.yaml` request-schema payload against a real endpoint (must fail is `422`, must pass is not `422`).
 AC: zero Schemathesis failures across 47 operations; every request-schema fixture maps to an endpoint and behaves; the sweep fits the CI time budget.
@@ -337,6 +337,8 @@ Verify: CI. Deps: T13.1. Files: `tests/conftest.py`, `.github/workflows/server.y
 **T14.1 Server README and repository docs (S).** `server/README.md` with setup, environment variables, running, tests on both databases, regenerating models, the purge command, the interpretations list, the locking rules, and the hook seam; the root README layout row and pointer; the changelog line under Unreleased.
 AC: a new developer can follow the README from clone to a green test run without other help.
 Verify: follow the README on a clean checkout. Deps: T13.2. Files: `server/README.md`, `README.md`, `CHANGELOG.md`.
+
+(Amended 2026-09-14, PR 6: `server/README.md` was reorganized around Development, How the server enforces the contract, Behaviour by resource, and Operations, with the pinned interpretations folded into their resources and new sections on validation, the check ladder, versions, locking, the test harness, the hook seam, the conformance suite, model regeneration, and running a local server.)
 
 **Checkpoint O.** Every acceptance row covered, all CI jobs green, documentation complete.
 
@@ -360,9 +362,9 @@ Verify: follow the README on a clean checkout. Deps: T13.2. Files: `server/READM
 
 1. `cd server && uv sync --frozen && uv run pytest` runs the full suite on SQLite with the `ContractClient` validating every response.
 2. `DATABASE_URL=postgresql://... uv run pytest` runs the same suite against PostgreSQL; CI does this with a service container.
-3. `uv run pytest tests/conformance` runs Schemathesis over all 47 operations against the ASGI app and replays every schema fixture through its endpoint.
+3. `uv run pytest tests/conformance` runs Schemathesis over all 47 operations against the ASGI app and replays every request-schema fixture through its endpoint.
 4. The three section 5 flows (create and share; submit, preview, merge; protect and merge with peer approval) run as end-to-end tests using the spec's example payloads, and the acceptance audit shows all 18 rows covered.
-5. `server/scripts/gen_models.sh --check` proves the committed models match the contract.
+5. `uv run scripts/gen_models.py --check` (run by `tests/test_generated_models.py` in both CI jobs) proves the committed models match the contract.
 6. The contract checks in `.github/workflows/contract.yml` still pass, proving `openapi.yaml` was not bent to fit the server.
 7. `docker build -t notes-api:dev . && NOTES_API_IMAGE=notes-api:dev server/scripts/smoke_image.sh` prints `smoke OK`, and the `Container image` workflow is green on the pull request.
 

@@ -30,8 +30,9 @@ Each release is an annotated tag `v<version>` on `main`, so a frozen copy of any
   comments (`/edit-requests/{requestId}/comments`: the owners and the proposer discuss a request without note
   `comment` permission). It also provides a `notes-api purge-expired` command for an external scheduler, a JSON
   request log with `X-Request-Id`, a Schemathesis conformance run over all 47 operations, an audit of the eighteen
-  acceptance rows, a development token issuer (`python -m notes_api.dev_issuer`) for the compose stack and the smoke
-  test, and `GET /healthz` and `GET /readyz` outside the contract for container probes. No contract change.
+  acceptance rows, a replay of every request-schema fixture in `tests/negative_cases.yaml` through the endpoint that
+  uses it, a development token issuer (`python -m notes_api.dev_issuer`) for the compose stack and the smoke test,
+  and `GET /healthz` and `GET /readyz` outside the contract for container probes. No contract change.
 
 ## [2.0.0] - 2026-09-13
 
