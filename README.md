@@ -1,10 +1,12 @@
 # Notes API
 
-A REST backend for a note-taking service shared among several small teams. Two design choices shape the project: **contract-based development** and **container-first delivery**. They make the intended behaviour and the runtime explicit, reviewable, and testable.
+A REST backend for a note-taking service shared among several small teams. Two design choices shape the project: **contract-based development** and **container-first delivery**. They make the intended behavior and the runtime explicit, reviewable, and testable.
 
 ## Two design choices
 
-The thinking behind both choices is simple: decide what the service promises, then make those promises verifiable in the artifact we run. The contract defines how clients can rely on the API. The container defines how the implementation is packaged and operated. Together, they favour clarity and correctness throughout development, testing, and deployment.
+The thinking behind both choices is simple: decide what the service promises, then make those promises verifiable in the artifact we run. The contract defines how clients can rely on the API. The container defines how the implementation is packaged and operated. Together, they favor clarity and correctness throughout development, testing, and deployment.  
+
+Additional rationale: This development approach works well with AI tools such as Codex and Claude. I’m looking for strong feedback loops that serve as guardrails for these tools. An LLM can be confident in an incorrect solution, so it needs clear feedback to identify flawed reasoning and correct its mistakes.
 
 ### Contract-based development
 
@@ -59,7 +61,7 @@ The contract travels inside the image, so the delivered server validates request
 
 ## What I'd add with more time
 
-With more time, I would experiment with gRPC/protobuf internals and explore extracting the document and review workflow into a microservice for agentic systems. These are future directions, building on the same contract-based and container-first principles.
+With more time, I would explore additional guardrails and feedback loops to help AI agents identify mistakes, validate their work, and correct flawed reasoning. These improvements would build on the same contract-based and container-first principles.
 
 ### Experiment with gRPC/protobuf internals
 
