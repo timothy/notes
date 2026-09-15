@@ -124,6 +124,14 @@ Sections 2 and 3 of [the design guide](docs/design-guide.md) spell out the rules
 
 These are the price of the guarantee above.
 
+## Architecture
+
+The service is one FastAPI process per container, backed by PostgreSQL and relying on an external identity provider to issue the bearer tokens the server verifies. At startup the server loads `openapi.yaml` and validates every request body against the document's own schemas. Routers translate HTTP into service calls, services run every check and write inside one transaction per operation under row locks, serializers build responses in the contract's shapes, and a pure merge engine computes three-way merges and diffs. The same hardened image serves the API, applies migrations as a one-shot job, and provides the purge command that an external scheduler runs to reclaim expired trash.
+
+Its architectural strengths follow from those choices. The contract is executable truth: enforced at runtime, checked on every test response, exercised by conformance and fixture replay, and guarded at the pull-request gate, so the document is the only description of the API. Checks resolve in a fixed order in every handler, every error is a uniform Problem Details response, and a caller who may not see a resource learns nothing about it. One transaction per operation, a fixed lock order, authorization rows locked alongside the write, and a hook seam that proves each check runs inside its transaction give correctness under concurrency on both databases. Routers, services, serializers, and the merge engine have single jobs, and the ownership rules are enforced by the server, in the schema and the services, rather than trusted to clients. The image CI verifies is the image a deployment runs: non-root, digest-pinned, scanned, smoke-tested, exercised end to end, and run read-only, with migrations separated from startup and configuration that fails fast without leaking secrets.
+
+[architecture.md](architecture.md) has the diagrams: the system context, the contract's consumers, the server's module layout and core model, a request's path through the check ladder, and the delivery pipeline.
+
 ## Repository layout
 
 | Path | Purpose |
