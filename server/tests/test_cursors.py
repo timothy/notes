@@ -4,6 +4,7 @@ table in ``moment DESC, id DESC`` order, or oldest first for the collections the
 from __future__ import annotations
 
 import base64
+import hmac
 import json
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -13,15 +14,22 @@ from fastapi import FastAPI
 from sqlalchemy import select
 
 from notes_api import cursors
-from notes_api.cursors import Key, decode, encode, fingerprint, microseconds
+from notes_api.cursors import CursorCodec, Key, fingerprint, microseconds
 from notes_api.http.problems import InvalidCursor
 from notes_api.models import User
+from tests.support import FakeClock
 
 CALLER = uuid.UUID("11111111-1111-4111-8111-111111111111")
 VIEW = fingerprint(CALLER, "users", {}, 25)
 KEY = Key(
     datetime(2026, 9, 13, 12, 0, 0, 123456, tzinfo=UTC), uuid.UUID("22222222-2222-4222-8222-222222222222")
 )
+
+
+SIGNING_KEY = bytes.fromhex("01" * 32)
+CODEC = CursorCodec(SIGNING_KEY, FakeClock(KEY.moment))
+encode = CODEC.encode
+decode = CODEC.decode
 
 
 def test_a_cursor_round_trips_its_key_exactly() -> None:
@@ -56,7 +64,14 @@ def test_the_fingerprint_does_not_depend_on_filter_order() -> None:
 
 
 def tampered(payload: object) -> str:
-    return base64.urlsafe_b64encode(json.dumps(payload).encode()).rstrip(b"=").decode()
+    if isinstance(payload, dict):
+        payload = {"exp": microseconds(KEY.moment + timedelta(hours=24)), **payload}
+    encoded = base64.urlsafe_b64encode(json.dumps(payload).encode()).rstrip(b"=").decode()
+    signed = "v1." + encoded
+    signature = (
+        base64.urlsafe_b64encode(hmac.digest(SIGNING_KEY, signed.encode(), "sha256")).rstrip(b"=").decode()
+    )
+    return signed + "." + signature
 
 
 @pytest.mark.parametrize(
@@ -123,6 +138,7 @@ def page(app: FastAPI, view: str, cursor: str | None, *, descending: bool = True
             limit=2,
             cursor=cursor,
             fingerprint=view,
+            codec=app.state.cursor_codec,
             descending=descending,
         )
 
@@ -155,3 +171,33 @@ def test_ascending_pagination_orders_oldest_first_then_by_id_and_stops_exactly(a
     # continue a view of the other kind.
     with pytest.raises(InvalidCursor):
         page(app, fingerprint(CALLER, "users", {}, 2), first.next_cursor)
+
+
+def test_cursor_works_across_replicas_and_not_across_signing_keys() -> None:
+    replica = CursorCodec(SIGNING_KEY, FakeClock(KEY.moment))
+    token = encode(KEY, VIEW)
+    assert replica.decode(token, VIEW) == KEY
+    with pytest.raises(InvalidCursor):
+        CursorCodec(b"x" * 32, FakeClock(KEY.moment)).decode(token, VIEW)
+
+
+@pytest.mark.parametrize(
+    "transform",
+    [
+        lambda token: token.replace("v1.", "v2.", 1),
+        lambda token: token.rsplit(".", 1)[0] + "." + "A" * 43,
+        lambda token: token + "=",
+        lambda token: token.split(".")[1],
+    ],
+)
+def test_version_signature_encoding_and_legacy_cursors_are_rejected(transform: object) -> None:
+    assert callable(transform)
+    with pytest.raises(InvalidCursor):
+        decode(transform(encode(KEY, VIEW)), VIEW)
+
+
+@pytest.mark.parametrize("expiry", [True, "tomorrow", microseconds(KEY.moment)])
+def test_authenticated_but_invalid_expiry_is_rejected(expiry: object) -> None:
+    token = tampered({"k": [microseconds(KEY.moment), KEY.id.hex], "f": VIEW, "exp": expiry})
+    with pytest.raises(InvalidCursor):
+        decode(token, VIEW)

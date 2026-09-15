@@ -72,7 +72,7 @@ class RemoteKeys:
 
     def __init__(self, url: str) -> None:
         self._client = PyJWKClient(
-            url, cache_keys=True, lifespan=JWKS_CACHE_SECONDS, timeout=JWKS_TIMEOUT_SECONDS
+            url, cache_keys=False, lifespan=JWKS_CACHE_SECONDS, timeout=JWKS_TIMEOUT_SECONDS
         )
 
     def signing_key(self, token: str) -> PyJWK:

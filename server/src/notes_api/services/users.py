@@ -14,7 +14,9 @@ from notes_api.models import User
 COLLECTION = "users"
 
 
-def list_users(session: Session, *, caller: User, limit: int, cursor: str | None) -> cursors.Page[User]:
+def list_users(
+    session: Session, *, caller: User, limit: int, cursor: str | None, codec: cursors.CursorCodec
+) -> cursors.Page[User]:
     """Every registered user, newest first."""
     return cursors.paginate(
         session,
@@ -24,6 +26,7 @@ def list_users(session: Session, *, caller: User, limit: int, cursor: str | None
         key_of=lambda row: cursors.Key(row.created_at, row.id),
         limit=limit,
         cursor=cursor,
+        codec=codec,
         fingerprint=cursors.fingerprint(caller.id, COLLECTION, {}, limit),
     )
 

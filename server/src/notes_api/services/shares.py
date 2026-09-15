@@ -27,7 +27,13 @@ OWNER_RECIPIENT_DETAIL = "The note owner already has every permission; sharing w
 
 
 def list_shares(
-    session: Session, *, caller: User, view: NoteView, limit: int, cursor: str | None
+    session: Session,
+    *,
+    caller: User,
+    view: NoteView,
+    limit: int,
+    cursor: str | None,
+    codec: cursors.CursorCodec,
 ) -> cursors.Page[Share]:
     """The note's shares, newest first; a trashed note simply has none."""
     return cursors.paginate(
@@ -38,6 +44,7 @@ def list_shares(
         key_of=lambda row: cursors.Key(row.created_at, row.id),
         limit=limit,
         cursor=cursor,
+        codec=codec,
         fingerprint=cursors.fingerprint(caller.id, COLLECTION, {"noteId": str(view.note.id)}, limit),
     )
 

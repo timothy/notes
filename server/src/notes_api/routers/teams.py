@@ -49,7 +49,14 @@ def list_teams(
     cursor: Cursor = None,
 ) -> JSONResponse:
     with sessions(request)() as session, uow.transaction(session, "list_teams"):
-        page = teams.list_teams(session, caller=user, scope=scope.value, limit=limit, cursor=cursor)
+        page = teams.list_teams(
+            session,
+            caller=user,
+            scope=scope.value,
+            limit=limit,
+            cursor=cursor,
+            codec=request.app.state.cursor_codec,
+        )
         body = serializers.page([serializers.team(row) for row in page.items], page.next_cursor)
     return serializers.json_response(body)
 
@@ -81,7 +88,14 @@ def list_memberships(
     user: CurrentUser, request: Request, teamId: uuid.UUID, limit: Limit = 25, cursor: Cursor = None
 ) -> JSONResponse:
     with sessions(request)() as session, uow.transaction(session, "list_memberships"):
-        page = teams.list_members(session, caller=user, team_id=teamId, limit=limit, cursor=cursor)
+        page = teams.list_members(
+            session,
+            caller=user,
+            team_id=teamId,
+            limit=limit,
+            cursor=cursor,
+            codec=request.app.state.cursor_codec,
+        )
         body = serializers.page([serializers.membership(row) for row in page.items], page.next_cursor)
     return serializers.json_response(body)
 

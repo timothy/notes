@@ -25,7 +25,9 @@ def get_current_user(user: CurrentUser) -> JSONResponse:
 
 def list_users(user: CurrentUser, request: Request, limit: Limit = 25, cursor: Cursor = None) -> JSONResponse:
     with request.app.state.session_factory() as session, uow.transaction(session, "list_users"):
-        page = users.list_users(session, caller=user, limit=limit, cursor=cursor)
+        page = users.list_users(
+            session, caller=user, limit=limit, cursor=cursor, codec=request.app.state.cursor_codec
+        )
         body = serializers.page([serializers.user(row) for row in page.items], page.next_cursor)
     return serializers.json_response(body)
 

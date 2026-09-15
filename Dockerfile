@@ -49,4 +49,4 @@ USER 10001:10001
 EXPOSE 8000
 # Exec form: uvicorn is PID 1, installs its own SIGTERM handler, and drains for up to 20 s. One worker per
 # container; scale with replicas. DATABASE_URL must be supplied at run time.
-CMD ["uvicorn", "--factory", "notes_api.main:create_app", "--host", "0.0.0.0", "--port", "8000", "--timeout-graceful-shutdown", "20"]
+CMD ["uvicorn", "--factory", "notes_api.main:create_app", "--host", "0.0.0.0", "--port", "8000", "--timeout-graceful-shutdown", "20", "--no-access-log"]

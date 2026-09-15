@@ -12,7 +12,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
 
 from notes_api import serializers, uow
-from notes_api.etags import parse_if_match
+from notes_api.etags import read_if_match
 from notes_api.http.bodies import parse_body
 from notes_api.http.deps import CurrentUser
 from notes_api.routers import API_PREFIX, Cursor, Limit, add_route, clock, sessions
@@ -32,7 +32,9 @@ def list_comments(
 ) -> JSONResponse:
     with sessions(request)() as session, uow.transaction(session, "list_comments"):
         view = notes.read(session, caller=user, note_id=noteId, now=clock(request).now())
-        page = comments.list_comments(session, caller=user, view=view, limit=limit, cursor=cursor)
+        page = comments.list_comments(
+            session, caller=user, view=view, limit=limit, cursor=cursor, codec=request.app.state.cursor_codec
+        )
         body = serializers.page([serializers.comment(row) for row in page.items], page.next_cursor)
     return serializers.json_response(body)
 
@@ -64,7 +66,7 @@ def update_comment(
     with sessions(request)() as session, uow.transaction(session, "update_comment"):
         view = notes.lock(session, caller=user, note_id=noteId, now=now, lock_access=True)
         comment = comments.for_edit(session, view=view, caller=user, comment_id=commentId)
-        comments.require_version(comment, parse_if_match(request.headers.get("if-match")))
+        comments.require_version(comment, read_if_match(request.headers))
         comment = comments.update_comment(session, view=view, comment=comment, body=body["body"], now=now)
         payload, etag = serializers.comment(comment), comments.etag(comment)
     return serializers.json_response(payload, headers={"ETag": etag})
@@ -74,6 +76,6 @@ def delete_comment(user: CurrentUser, request: Request, noteId: uuid.UUID, comme
     with sessions(request)() as session, uow.transaction(session, "delete_comment"):
         view = notes.lock(session, caller=user, note_id=noteId, now=clock(request).now(), lock_access=True)
         comment = comments.for_delete(session, view=view, caller=user, comment_id=commentId)
-        comments.require_version(comment, parse_if_match(request.headers.get("if-match")))
+        comments.require_version(comment, read_if_match(request.headers))
         comments.delete_comment(session, view=view, comment=comment)
     return Response(status_code=204)

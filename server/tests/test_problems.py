@@ -7,7 +7,7 @@ from fastapi import APIRouter, FastAPI, Query, Request
 from fastapi.testclient import TestClient
 
 from notes_api.contract import Contract
-from notes_api.etags import parse_if_match
+from notes_api.etags import read_if_match
 from notes_api.http.bodies import parse_body
 from notes_api.http.problems import PROBLEMS, Unauthenticated
 from notes_api.main import create_app
@@ -30,7 +30,7 @@ def _test_routes() -> APIRouter:
 
     @router.patch("/conditional")
     def conditional(request: Request) -> dict[str, str]:
-        return {"etag": parse_if_match(request.headers.get("If-Match"))}
+        return {"etag": read_if_match(request.headers)}
 
     @router.get("/params")
     def params(limit: int = Query(default=25, ge=1, le=100)) -> dict[str, int]:
@@ -156,11 +156,12 @@ def test_401_carries_a_bearer_challenge(client: TestClient) -> None:
 
 
 def test_unexpected_exception_is_a_500_problem_that_leaks_nothing(client: TestClient) -> None:
-    response = client.get("/v1/_test/boom")
+    response = client.get("/v1/_test/boom", headers={"X-Request-Id": "audit-unexpected"})
     assert response.status_code == 500
     assert response.headers["content-type"].startswith(PROBLEM_JSON)
     assert "secret" not in response.text
     assert response.headers["Cache-Control"] == "no-store"
+    assert response.headers["X-Request-Id"] == "audit-unexpected"
 
 
 def test_every_response_carries_cache_control_no_store(client: TestClient) -> None:

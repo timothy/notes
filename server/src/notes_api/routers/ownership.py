@@ -14,7 +14,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from notes_api import serializers, uow
-from notes_api.etags import parse_if_match
+from notes_api.etags import read_if_match
 from notes_api.http.bodies import parse_body
 from notes_api.http.deps import CurrentUser
 from notes_api.routers import add_route, clock, sessions
@@ -34,7 +34,7 @@ def add_owner(user: CurrentUser, request: Request, noteId: uuid.UUID) -> JSONRes
     with sessions(request)() as session, uow.transaction(session, "add_owner"):
         view = notes.lock(session, caller=user, note_id=noteId, now=now)
         ownership.require_author(view, user)
-        notes.require_version(view, parse_if_match(request.headers.get("if-match")))
+        notes.require_version(view, read_if_match(request.headers))
         view = ownership.add_owner(session, view=view, user_id=uuid.UUID(body["userId"]), now=now)
         payload, etag = _payload(view), view.etag
     return serializers.json_response(payload, headers={"ETag": etag})
@@ -46,7 +46,7 @@ def remove_owner(user: CurrentUser, request: Request, noteId: uuid.UUID, userId:
     with sessions(request)() as session, uow.transaction(session, "remove_owner"):
         view = notes.lock(session, caller=user, note_id=noteId, now=now)
         ownership.authorize_removal(view, user, userId)
-        notes.require_version(view, parse_if_match(request.headers.get("if-match")))
+        notes.require_version(view, read_if_match(request.headers))
         view = ownership.remove_owner(session, view=view, caller=user, user_id=userId, now=now)
         payload, etag = _payload(view), view.etag
     return serializers.json_response(payload, headers={"ETag": etag})
@@ -58,7 +58,7 @@ def update_review_policy(user: CurrentUser, request: Request, noteId: uuid.UUID)
     with sessions(request)() as session, uow.transaction(session, "update_review_policy"):
         view = notes.lock(session, caller=user, note_id=noteId, now=now)
         ownership.require_author(view, user)
-        notes.require_version(view, parse_if_match(request.headers.get("if-match")))
+        notes.require_version(view, read_if_match(request.headers))
         view = ownership.set_review_policy(
             session, view=view, mode=body["mode"], required=body["requiredApprovals"], now=now
         )

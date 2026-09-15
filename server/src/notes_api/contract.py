@@ -182,6 +182,33 @@ def nul_character_errors(instance: object) -> list[FieldError]:
     return errors
 
 
+def surrogate_character_errors(instance: object) -> list[FieldError]:
+    """Reject unencodable strings before schema errors can echo them into JSON responses.
+
+    An invalid property name is reported at the root: its name cannot safely appear in a pointer.
+    """
+    errors: list[FieldError] = []
+
+    def invalid(value: str) -> bool:
+        return any(0xD800 <= ord(character) <= 0xDFFF for character in value)
+
+    def walk(value: object, path: tuple[str | int, ...]) -> None:
+        if isinstance(value, str) and invalid(value):
+            errors.append(FieldError("body", json_pointer(path), "must not contain lone Unicode surrogates"))
+        elif isinstance(value, dict):
+            for key, item in value.items():
+                if invalid(str(key)):
+                    errors.append(FieldError("body", "", "must not contain lone Unicode surrogates"))
+                else:
+                    walk(item, (*path, str(key)))
+        elif isinstance(value, list):
+            for index, item in enumerate(value):
+                walk(item, (*path, index))
+
+    walk(instance, ())
+    return errors
+
+
 def json_pointer(path: Iterable[str | int]) -> str:
     """RFC 6901 pointer for a jsonschema path; the empty path is the whole document."""
     return "".join(f"/{escape_token(str(part))}" for part in path)

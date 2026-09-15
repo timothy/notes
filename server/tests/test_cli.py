@@ -113,15 +113,13 @@ def test_purge_deletes_exactly_the_expired_notes_and_their_children(app: FastAPI
     assert purge_expired(app.state.session_factory, NOW + timedelta(hours=2)) == 1
 
 
-def test_the_command_reads_the_servers_settings_and_reports_the_count(
+def test_the_command_needs_only_database_settings_and_reports_the_count(
     app: FastAPI, settings: Settings, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     seed(app)
     monkeypatch.setenv("DATABASE_URL", settings.database_url)
-    monkeypatch.setenv("OIDC_ISSUER", settings.oidc_issuer)
-    monkeypatch.setenv("OIDC_AUDIENCE", settings.oidc_audience)
-    monkeypatch.setenv("OIDC_JWKS", settings.oidc_jwks or "")
-    monkeypatch.delenv("OIDC_JWKS_URL", raising=False)
+    for name in ("OIDC_ISSUER", "OIDC_AUDIENCE", "OIDC_JWKS", "OIDC_JWKS_URL", "CURSOR_SIGNING_KEY"):
+        monkeypatch.delenv(name, raising=False)
     assert main(["purge-expired"]) == 0
     assert capsys.readouterr().out == "purged 1 expired notes\n"
     assert main(["purge-expired"]) == 0
@@ -131,13 +129,14 @@ def test_the_command_reads_the_servers_settings_and_reports_the_count(
 def test_missing_settings_fail_fast_without_leaking_the_password(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://notes:s3cret-password@db:5432/notes")
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setenv("UNRELATED_SECRET", "s3cret-password")
     for name in ("OIDC_ISSUER", "OIDC_AUDIENCE", "OIDC_JWKS", "OIDC_JWKS_URL"):
         monkeypatch.delenv(name, raising=False)
     assert main(["purge-expired"]) == 2
     captured = capsys.readouterr()
     assert captured.out == ""
-    assert "OIDC_ISSUER" in captured.err and "s3cret-password" not in captured.err
+    assert "DATABASE_URL" in captured.err and "s3cret-password" not in captured.err
 
 
 def test_the_module_answers_help_without_any_configuration() -> None:

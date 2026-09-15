@@ -18,7 +18,7 @@ from jwt import PyJWKSet
 from notes_api.dev_issuer import KEY_VARIABLE, DevIssuer, main
 
 LINE = re.compile(r"^([A-Z_]+)='([^']*)'$")
-NAMES = ["OIDC_ISSUER", "OIDC_AUDIENCE", "OIDC_JWKS", KEY_VARIABLE]
+NAMES = ["OIDC_ISSUER", "OIDC_AUDIENCE", "OIDC_JWKS", KEY_VARIABLE, "CURSOR_SIGNING_KEY"]
 
 
 def parse_env(text: str) -> dict[str, str]:
@@ -43,6 +43,7 @@ def test_env_lines_round_trip_into_an_issuer_whose_tokens_the_jwks_verifies() ->
     text = issuer.env_lines()
     values = parse_env(text)
     assert list(values) == NAMES
+    assert re.fullmatch(r"[0-9a-f]{64}", values["CURSOR_SIGNING_KEY"])
     assert shlex.split(text) == [f"{name}={value}" for name, value in values.items()]
     restored = DevIssuer.from_env(values)
     token = restored.token("ada", "Ada Okafor")

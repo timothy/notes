@@ -28,7 +28,9 @@ def list_shares(
     with sessions(request)() as session, uow.transaction(session, "list_shares"):
         view = notes.read(session, caller=user, note_id=noteId, now=clock(request).now())
         notes.require_owner(view)
-        page = shares.list_shares(session, caller=user, view=view, limit=limit, cursor=cursor)
+        page = shares.list_shares(
+            session, caller=user, view=view, limit=limit, cursor=cursor, codec=request.app.state.cursor_codec
+        )
         body = serializers.page([serializers.share(row) for row in page.items], page.next_cursor)
     return serializers.json_response(body)
 

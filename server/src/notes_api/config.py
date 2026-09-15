@@ -1,17 +1,18 @@
 """Runtime configuration, read from environment variables.
 
 Every setting without a default is required, and a process without one refuses to start. ``load_settings``
-is the entry point for the application and for Alembic: it turns pydantic's validation error, whose text
-embeds the values it was given (including the database password), into a ``ConfigurationError`` that names
-only the variables and what is wrong with them.
+and ``load_database_settings`` are the API and maintenance entry points. They turn validation errors
+(which embed input values, including secrets) into a ``ConfigurationError`` naming only the variables
+and what is wrong with them.
 """
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Annotated, Any, Self
 
-from pydantic import StringConstraints, ValidationError, model_validator
+from pydantic import SecretStr, StringConstraints, ValidationError, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from notes_api.contract import DEFAULT_CONTRACT_PATH
@@ -23,15 +24,26 @@ class ConfigurationError(RuntimeError):
     """The environment does not configure the server. The message names variables, never values."""
 
 
-class Settings(BaseSettings):
+class DatabaseSettings(BaseSettings):
     # env_ignore_empty: an empty variable counts as unset, so a compose default of ``${OIDC_JWKS_URL:-}``
     # leaves the field at None and a required field stays required.
     model_config = SettingsConfigDict(extra="ignore", env_ignore_empty=True)
 
-    contract_path: Path = DEFAULT_CONTRACT_PATH
     # Required. Tests pass a SQLite URL explicitly and containers get PostgreSQL from the environment, so a
     # process started without DATABASE_URL fails here instead of quietly writing a SQLite file somewhere.
     database_url: str
+
+
+class Settings(DatabaseSettings):
+    contract_path: Path = DEFAULT_CONTRACT_PATH
+    cursor_signing_key: SecretStr
+
+    @field_validator("cursor_signing_key")
+    @classmethod
+    def _valid_cursor_key(cls, value: SecretStr) -> SecretStr:
+        if re.fullmatch(r"[0-9a-fA-F]{64}", value.get_secret_value()) is None:
+            raise ValueError("must contain exactly 64 hexadecimal characters (32 random bytes)")
+        return value
 
     # Bearer access tokens are verified against this issuer's signing keys: the token's ``iss`` and ``aud``
     # must match, and the key comes from the JWKS URL or from an inline JWKS document (JSON; the dev issuer
@@ -52,6 +64,14 @@ def load_settings(**overrides: Any) -> Settings:
     """``Settings`` from the environment, or a ``ConfigurationError`` that is safe to log."""
     try:
         return Settings(**overrides)
+    except ValidationError as exc:
+        raise ConfigurationError(describe(exc)) from None
+
+
+def load_database_settings() -> DatabaseSettings:
+    """Operator commands need database access, not authentication or cursor signing secrets."""
+    try:
+        return DatabaseSettings()
     except ValidationError as exc:
         raise ConfigurationError(describe(exc)) from None
 

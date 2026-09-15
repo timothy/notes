@@ -1,6 +1,8 @@
 """The initial migration creates the whole schema, agrees with the models, and cascades deletes."""
 
 import os
+import subprocess
+import sys
 import uuid
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
@@ -14,9 +16,45 @@ from sqlalchemy.exc import IntegrityError, StatementError
 from sqlalchemy.orm import Session
 
 from notes_api import models
+from notes_api.config import Settings
 
 SERVER_DIR = Path(__file__).resolve().parents[1]
 NOW = datetime(2026, 9, 13, 12, 0, 0, 123456, tzinfo=UTC)
+
+
+def test_migration_cli_needs_only_database_url(settings: Settings) -> None:
+    env = {name: value for name, value in os.environ.items() if not name.startswith("OIDC_")}
+    env.pop("CURSOR_SIGNING_KEY", None)
+    env["DATABASE_URL"] = settings.database_url
+    command_line = [sys.executable, "-m", "alembic"]
+    try:
+        result = subprocess.run(
+            [*command_line, "upgrade", "head"],
+            env=env,
+            cwd=SERVER_DIR,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        again = subprocess.run(
+            [*command_line, "upgrade", "head"],
+            env=env,
+            cwd=SERVER_DIR,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert again.returncode == 0, again.stderr
+    finally:
+        subprocess.run(
+            [*command_line, "downgrade", "base"],
+            env=env,
+            cwd=SERVER_DIR,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
 
 
 def alembic_config(url: str) -> Config:
