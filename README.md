@@ -1,8 +1,91 @@
 # Notes API
 
-A REST backend for a note-taking service shared among several small teams, built with Contract-Driven Development (CDD) and a container-first approach. This repository holds the contract and its reference server: an OpenAPI 3.1.2 document, the normative design guide behind it, a checker that keeps the two honest, and under `server/` a FastAPI implementation of every operation that ships as a container image.
+A REST backend for a note-taking service shared among several small teams. Two design choices shape the project: **contract-based development** and **container-first delivery**. They make the intended behaviour and the runtime explicit, reviewable, and testable.
 
-## Why nobody gets write access to someone else's notes
+## Two design choices
+
+The thinking behind both choices is simple: decide what the service promises, then make those promises verifiable in the artifact we run. The contract defines how clients can rely on the API. The container defines how the implementation is packaged and operated. Together, they favour clarity and correctness throughout development, testing, and deployment.
+
+### Contract-based development
+
+Contract-based development, called Contract-Driven Development (CDD) elsewhere in this repository, starts with the public behaviour. [`openapi.yaml`](openapi.yaml) and [the design guide](docs/design-guide.md) are the source of truth. The contract's first two releases preceded the server; the FastAPI implementation under `server/` follows that contract.
+
+**Why this is a good fit:**
+
+- **A shared definition of correct behaviour.** Clients, the server, tests, and reviewers work from the same operations, schemas, permissions, status codes, headers, and examples. Questions such as who may merge a proposal or what a stale ETag means have an explicit answer.
+- **Design decisions are cheaper to review early.** Writing permissions, failure cases, lifecycle rules, and acceptance scenarios first exposes ambiguity before it spreads into handlers, database code, and client assumptions. The guide preserves the reasoning for future contributors.
+- **Clients can develop independently.** Prism serves the contract's examples as a mock. Client work and integration planning can proceed before the corresponding server implementation is ready.
+- **The contract participates in enforcement.** Request bodies are validated at runtime with the OpenAPI document's own JSON Schemas. Generated typed models help implementation, and a regeneration check detects drift in the committed models.
+- **Conformance has concrete evidence.** The test client checks responses against declared statuses, headers, media types, and schemas. Schemathesis exercises all 47 operations, and request-schema fixtures are replayed through their endpoints. Acceptance and race tests cover rules that schemas alone cannot express.
+- **Compatibility changes are visible.** Semantic document versions, the `/v1` compatibility line, and the oasdiff pull-request gate make detected client-breaking changes explicit. A deliberate break follows the documented versioning process.
+- **Examples do several jobs.** Examples support review, mock responses, schema validation, and exact server fixtures, including the merge engine's diffs. Concrete inputs and outputs help expose disagreements that prose can hide.
+- **Documentation stays close to implementation.** The [API reference](https://hweean.com/notes/) is rendered from `openapi.yaml`, and an audit connects the guide's acceptance rows to tests. Updating one source reduces the number of independently maintained descriptions.
+- **Implementation can evolve behind a stable interface.** Clients depend on the published behaviour. Internal refactoring, database changes, or a future implementation can be judged against the same contract and acceptance scenarios.
+
+**Clarity:** the contract makes the service's promises inspectable before anyone reads the implementation. **Correctness:** runtime validation and automated checks turn many of those promises into executable requirements. A schema-valid response can still contain a business-rule bug, so authorization, transaction, and merge tests remain essential.
+
+**The tradeoff:** more design work happens up front, and a behaviour change may require coordinated updates to the contract, guide, validator expectations, fixtures, generated models, and changelog. Schema tooling also has limits; generated models cannot replace the contract's validator. That effort is worthwhile here because ownership, review, and concurrency rules are central to the product. Making them precise early reduces integration rework and gives later changes a clear standard to meet.
+
+### Container-first approach
+
+The container image is the unit of delivery. It is built from the repository root and includes the application, locked runtime dependencies, migrations, and `openapi.yaml`, which is a runtime dependency. Compose runs PostgreSQL, applies migrations with that same application image, and starts the API. CI builds, scans, smoke-tests, and exercises the image through the API.
+
+**Why this is a good fit:**
+
+- **A consistent runtime across environments.** The image packages Python, dependencies, application code, and the contract together. Running a tested image elsewhere reduces differences caused by host installations and makes failures easier to reproduce.
+- **Simple onboarding.** `make up` builds the image, creates missing development credentials, starts PostgreSQL, applies migrations, and waits for readiness. Starting the service needs Docker with Compose, Make, and Bash; it does not require a host Python environment.
+- **Dependency isolation and deliberate updates.** The multi-stage build installs from `server/uv.lock`, base images are pinned by digest, and Dependabot proposes base-image updates. Each project can carry its own runtime without conflicting with other local projects.
+- **Faster repeat builds.** Dependency layers are separate from source and contract copies, and build caches are used locally and in CI. Routine edits can reuse the expensive dependency installation work.
+- **Deployment assumptions are tested early.** The smoke test checks the process user, read-only filesystem, dropped capabilities, probes, database readiness transitions, migrations, and graceful shutdown. End-to-end curl workflows exercise the built service across all 47 operations.
+- **A smaller, restricted runtime.** The runtime excludes uv and test tooling and runs as uid 10001. Compose adds a read-only root filesystem, drops capabilities, and prevents privilege escalation. CI scans for fixable high and critical vulnerabilities; these controls reduce exposure and catch known problems.
+- **Explicit operations.** Required configuration comes from the environment, missing settings prevent startup, and migrations run as a separate step before the API. Separate liveness and readiness probes distinguish a running process from one ready to serve requests.
+- **Clear release and recovery boundaries.** Packaging code, dependencies, and the contract together gives a deployment a specific artifact to identify and promote. Reusing a previously tested image can simplify application rollback when the database schema remains compatible. CI currently verifies images without publishing them to a registry.
+- **Portability with documented requirements.** The image can be deployed to a compatible container runtime using the configuration, database, storage, and security requirements in [server/README.md](server/README.md#operations). The service's operating assumptions travel with the repository.
+- **A fast development loop remains available.** Host-based uv checks and tests provide quick feedback, while Compose, PostgreSQL tests, smoke tests, and end-to-end tests verify the delivery environment. Container-first keeps the delivered artifact central while allowing practical development tools.
+
+**Clarity:** the Dockerfile, Compose configuration, and operating guide show what the service needs to run. **Correctness:** image-level checks exercise packaging and lifecycle behaviour that an in-process test cannot establish. Containers reduce environment differences; host architecture, configuration, networking, and database state still matter.
+
+**The tradeoff:** Docker and BuildKit add setup, build time, disk use, and maintenance. Security updates still require rebuilding and testing; the build applies current Debian updates, so separate builds are not guaranteed to be byte-identical. Deployments must supply configuration and preserve database compatibility through rollouts and rollbacks. This is worthwhile because the project tests its delivery assumptions continuously, and keeps host-based tests for quick feedback.
+
+### Why the two choices work together
+
+| Goal | What the two choices provide |
+| --- | --- |
+| **Clarity** | An explicit API promise and an explicit runtime. Reviewers can inspect both the intended behaviour and the conditions under which it runs. |
+| **Correctness** | Checks at complementary levels: contract validation, acceptance and concurrency tests, tests on both databases, and smoke and end-to-end checks against the image. |
+| **Good tradeoffs** | Up-front specification work and build maintenance buy repeatable checks, less integration guesswork, easier onboarding, and more controlled change. Fast local tests keep routine development practical. |
+
+The contract travels inside the image, so the delivered server validates requests against the document packaged with it. The aim is to make mistakes easier to detect and changes easier to reason about. [AGENTS.md](AGENTS.md) turns these choices into working guidance for coding agents.
+
+## What I'd add with more time
+
+With more time, I would experiment with gRPC/protobuf internals and explore extracting the document and review workflow into a microservice for agentic systems. These are future directions, building on the same contract-based and container-first principles.
+
+### Experiment with gRPC/protobuf internals
+
+I would try gRPC with Protocol Buffers for internal service-to-service communication. I would define those interfaces in `.proto` contracts and evaluate generated types, payload size, latency, debugging, and schema evolution against the current approach. I would measure that tradeoff before committing to the architecture.
+
+### An agentic zero-trust framework
+
+Independent review is a useful foundation for agentic workflows. I would extend the API into an agentic communication and documentation system where contributions go through a review process before becoming accepted documents:
+
+- **Specialized review agents.** Agents trained specifically for review would verify each proposed document or revision before it is committed, checking it against the task's requirements and supporting evidence.
+- **Gatekeeper verification.** Gatekeeper LLMs, or other automated checks, would double-check agentic output and return actionable feedback before a contribution is accepted. A contributor could revise its proposal and submit it for review again.
+- **Agents with complementary strengths.** Agents stronger in different areas would cross-check one another, aiming to catch mistakes a single agent might miss and reduce errors in the accepted result.
+
+The zero-trust principle I would apply is that an agent's output begins as an untrusted proposal. Each agent would have a verified identity and narrowly scoped permissions; producing a document would not itself grant authority to accept it. Review findings would feed the ownership and approval rules, and an authorized actor would commit an accepted change. Proposals, feedback, approvals, and the final decision would remain attributable and inspectable.
+
+Architecturally, I would investigate making this workflow a microservice that plugs into a larger agentic system. It would own documents, proposals, review state, and acceptance rules, while contributors and reviewers could participate as separate services. That boundary would let other workflows reuse the same review process. I would evaluate review quality, latency, and model cost to decide where additional reviewers earn their place.
+
+### Extend contract-first development to events
+
+To support that microservice architecture, I would add an AsyncAPI document alongside the OpenAPI contract. OpenAPI would describe the HTTP operations, and AsyncAPI would describe the event-driven interactions: for example, a proposal being submitted, review feedback becoming available, or a contribution being accepted or rejected.
+
+I would define message schemas, producers and consumers, correlation identifiers, and compatibility rules before implementing those interactions. Delivery behaviour would also need explicit rules for retries, duplicate messages, and ordering, backed by integration tests. This would extend the contract-first approach to an event-driven microservice architecture, giving independently running agents a shared description of how to communicate and advance a contribution through review.
+
+-------------------
+
+## Current design: Why nobody gets write access to someone else's notes
 
 Many people now take notes with AI and LLM assistance, and the quality of those notes differs wildly from one person to the next. People who put in the effort end up with high-quality notes. People who do not let a lot of AI slop seep into theirs.
 
@@ -41,44 +124,19 @@ Sections 2 and 3 of [the design guide](docs/design-guide.md) spell out the rules
 
 These are the price of the guarantee above.
 
-## Two design choices
+## Architecture
 
-Two decisions shape everything else here: Contract-Driven Development (CDD), where the contract is written, reviewed, and released before the code that implements it, and a container-first approach, where the container image is the unit of delivery.
+The service is one FastAPI process per container, backed by PostgreSQL and relying on an external identity provider to issue the bearer tokens the server verifies. At startup the server loads `openapi.yaml` and validates every request body against the document's own schemas. Routers translate HTTP into service calls, services run every check and write inside one transaction per operation under row locks, serializers build responses in the contract's shapes, and a pure merge engine computes three-way merges and diffs. The same hardened image serves the API, applies migrations as a one-shot job, and provides the purge command that an external scheduler runs to reclaim expired trash.
 
-### Contract-Driven Development (CDD)
+Its architectural strengths follow from those choices. The contract is executable truth: enforced at runtime, checked on every test response, exercised by conformance and fixture replay, and guarded at the pull-request gate, so the document is the only description of the API. Checks resolve in a fixed order in every handler, every error is a uniform Problem Details response, and a caller who may not see a resource learns nothing about it. One transaction per operation, a fixed lock order, authorization rows locked alongside the write, and a hook seam that proves each check runs inside its transaction give correctness under concurrency on both databases. Routers, services, serializers, and the merge engine have single jobs, and the ownership rules are enforced by the server, in the schema and the services, rather than trusted to clients. The image CI verifies is the image a deployment runs: non-root, digest-pinned, scanned, smoke-tested, exercised end to end, and run read-only, with migrations separated from startup and configuration that fails fast without leaking secrets.
 
-In CDD the contract is the product and the code follows it. Here the contract is `openapi.yaml` together with [the design guide](docs/design-guide.md). They were written, reviewed, and released (1.0.0, then 2.0.0) before a line of server code existed, and they change only through their own process: the twelve-check validator, the Redocly lint, the oasdiff gate that fails a pull request on a client-breaking change, and a semantic version on the document. The server under `server/` implements the contract and is never allowed to bend it: request bodies are validated at runtime by the spec's own JSON Schemas, the typed models are generated from the document with a drift check, and the test client checks every response against the declared status, headers, media type, and schema.
-
-What this buys:
-
-- **Behaviour is reviewed as a document, not discovered in code.** Permissions, merge semantics, the error vocabulary, and the acceptance scenarios were argued over in prose and examples, where they are cheap to change, before they became expensive to change in a schema and a service.
-- **Clients never wait for the server.** Prism serves the contract's examples as a mock, so client work started before a backend existed and continues while the server lands slice by slice.
-- **The server cannot drift.** The spec validates requests at runtime, the models are generated from it, every test response is validated against it, and Schemathesis runs over all 47 operations. A response the contract does not declare fails the test that produced it.
-- **Compatibility is enforced by a machine.** The `/v1` prefix is the compatibility line, `info.version` is semantic, and oasdiff fails any pull request that would break a correctly written client.
-- **Examples do triple duty.** The same examples are served by the mock, validated by the checker against their schemas, and used as byte-exact fixtures in the server's tests; the three-way merge reproduces the spec's diffs character for character.
-- **Documentation is the source, not a copy.** The API reference at https://hweean.com/notes/ is rendered from `openapi.yaml`, so it cannot go stale, and the acceptance table in the design guide doubles as the server's test plan.
-
-The price: a change in behaviour touches the contract, the guide, the checker's tables, and the changelog before it touches code, and the server implements what the document says even where a shortcut would be easier.
-
-### Container-first approach
-
-In a container-first approach the server's deliverable is a container image, not a checkout. One image is built from the repository root (it carries `openapi.yaml`, because the contract is a runtime dependency), pinned by digest to its base images, run as an unprivileged user on a read-only filesystem, and started as a single uvicorn process. The same image applies migrations as a separate step. `make up` bootstraps credentials and runs PostgreSQL, the migration, and the API; a smoke script asserts the container's contract; and CI lints the Dockerfile, builds the image, scans it for fixable vulnerabilities, and runs that smoke test on every pull request.
-
-What this buys:
-
-- **One artifact from laptop to production.** The image that passes the smoke test in CI is the image that runs locally through compose and would run in a cluster. There is no "works on my machine" and no drift between environments.
-- **The runtime is proven on every pull request.** The smoke test checks what a deployment would otherwise discover the hard way: the process runs as uid 10001 with no capabilities and no privilege escalation, the filesystem is read-only, the probes answer, readiness follows the database down and back up, the schema is at head and migrating again is a no-op, and SIGTERM produces a clean exit.
-- **Security is the default posture.** Non-root, read-only, no capabilities, no shell entrypoint, no uv or test tooling or curl in the runtime, base images pinned by digest and moved by Dependabot, Debian security updates applied at build time, and a Trivy gate that fails the build on any fixable critical or high finding.
-- **Operations are explicit.** Configuration comes from the environment, and a misconfigured container refuses to start instead of running on a stray SQLite file; migrations run once, before the rollout, never at process start; liveness and readiness are separate endpoints, so a database incident takes replicas out of rotation without restarting them.
-- **Onboarding is one command.** `make up` builds the image, creates development credentials if absent, and starts the full stack with readiness checks. Startup needs Docker with Compose, Make, and Bash; testing prerequisites are listed separately below.
-- **Deploy anywhere that runs OCI images.** Kubernetes, Compose, or any other runtime. The constraints the image assumes are written down in [server/README.md](server/README.md) instead of living in someone's head.
-
-The price: building needs Docker with BuildKit, the image is rebuilt when a base image moves, and the inner loop for tests stays on uv because it is faster than a container on macOS.
+[architecture.md](architecture.md) has the diagrams: the system context, the contract's consumers, the server's module layout and core model, a request's path through the check ladder, and the delivery pipeline.
 
 ## Repository layout
 
 | Path | Purpose |
 | --- | --- |
+| `AGENTS.md` | Project guidance for coding agents: design principles, implementation conventions, and verification commands. |
 | `openapi.yaml` | The contract and source of truth. Operation descriptions and schemas are normative. |
 | `docs/design-guide.md` | The rules behind the contract: model, permissions, edit requests and merges, lifecycle, HTTP conventions, and acceptance scenarios. |
 | `scripts/validate_contract.py` | Twelve static checks that keep the spec and the guide consistent with each other. |
