@@ -244,16 +244,21 @@ async def _http_exception_handler(request: Request, exc: Exception) -> Response:
         return respond(request, NotFound())
     if 400 <= exc.status_code < 500:
         return respond(request, MalformedRequest(detail=str(exc.detail)))
-    return _internal_error()
+    return _internal_error(request)
 
 
 async def _unexpected_handler(request: Request, exc: Exception) -> Response:
     log.error("unhandled exception on %s %s", request.method, request.url.path, exc_info=exc)
-    return _internal_error()
+    return _internal_error(request)
 
 
-def _internal_error() -> Response:
+def _internal_error(request: Request) -> Response:
     """A 500 that says nothing about the failure. Starlette's error layer bypasses the middleware, so the
     cache header is set here."""
     body = {"type": "about:blank", "title": "Internal Server Error", "status": 500}
-    return JSONResponse(body, status_code=500, media_type=PROBLEM_JSON, headers={"Cache-Control": "no-store"})
+    return JSONResponse(
+        body,
+        status_code=500,
+        media_type=PROBLEM_JSON,
+        headers={"Cache-Control": "no-store", "X-Request-Id": request.state.request_id},
+    )

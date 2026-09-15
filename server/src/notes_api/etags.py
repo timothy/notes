@@ -10,6 +10,8 @@ from __future__ import annotations
 import re
 import secrets
 
+from starlette.datastructures import Headers
+
 from notes_api.contract import FieldError
 from notes_api.http.problems import MalformedRequest, PreconditionRequired
 
@@ -25,6 +27,17 @@ def new_version() -> str:
 
 def quote(version: str) -> str:
     return f'"{version}"'
+
+
+def read_if_match(headers: Headers) -> str:
+    """Reject repeated header fields as well as comma-separated lists, at the precondition rung."""
+    values = headers.getlist("if-match")
+    if len(values) > 1:
+        raise MalformedRequest(
+            detail="If-Match must contain exactly one strong entity tag.",
+            errors=[FieldError("header", "If-Match", IF_MATCH_DETAIL)],
+        )
+    return parse_if_match(values[0] if values else None)
 
 
 def parse_if_match(value: str | None) -> str:

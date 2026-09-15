@@ -44,7 +44,7 @@ def create_team(session: Session, *, creator: User, name: str, clock: Clock) -> 
 
 
 def list_teams(
-    session: Session, *, caller: User, scope: str, limit: int, cursor: str | None
+    session: Session, *, caller: User, scope: str, limit: int, cursor: str | None, codec: cursors.CursorCodec
 ) -> cursors.Page[Team]:
     statement = select(Team)
     if scope == "mine":
@@ -58,6 +58,7 @@ def list_teams(
         key_of=lambda row: cursors.Key(row.created_at, row.id),
         limit=limit,
         cursor=cursor,
+        codec=codec,
         fingerprint=cursors.fingerprint(caller.id, TEAMS_COLLECTION, {"scope": scope}, limit),
     )
 
@@ -104,7 +105,13 @@ def delete_team(session: Session, *, team: Team) -> None:
 
 
 def list_members(
-    session: Session, *, caller: User, team_id: uuid.UUID, limit: int, cursor: str | None
+    session: Session,
+    *,
+    caller: User,
+    team_id: uuid.UUID,
+    limit: int,
+    cursor: str | None,
+    codec: cursors.CursorCodec,
 ) -> cursors.Page[Membership]:
     """Members only; a nonmember gets ``403`` because team metadata is discoverable by everyone."""
     get_team(session, team_id)
@@ -119,6 +126,7 @@ def list_members(
         key_of=lambda row: cursors.Key(row.joined_at, row.user_id),
         limit=limit,
         cursor=cursor,
+        codec=codec,
         fingerprint=cursors.fingerprint(caller.id, MEMBERS_COLLECTION, filters, limit),
     )
 

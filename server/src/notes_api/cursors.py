@@ -1,9 +1,9 @@
 """Opaque keyset cursors and the pagination helper every list operation uses.
 
-A cursor is base64url JSON ``{"k": [microseconds, id], "f": fingerprint}``: the sort key of the last row
-of the page and a fingerprint of the caller, the collection, the filters, and the limit. Any decoding
-failure or fingerprint mismatch is the contract's ``400 invalid_cursor``. No signature: authorization is
-re-applied on every page, so a forged cursor can only reposition the caller's own view.
+A cursor is ``v1.<base64url JSON>.<base64url HMAC-SHA256>``. Its authenticated payload contains the sort
+key, the caller/collection/filter/limit fingerprint, and expiry in integer Unix microseconds. Cursors
+expire after 24 hours. All replicas share an explicitly configured key; authorization is still applied
+on every page. Legacy unsigned cursors and any verification failure are ``400 invalid_cursor``.
 
 Pages are read with a row-value comparison ``(moment, id) < (:moment, :id)`` in ``moment DESC, id DESC``
 order (or ``>`` in ascending order for the collections the contract sorts oldest first, such as comments)
@@ -14,21 +14,23 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import hmac
 import json
 import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any
 
 from sqlalchemy import Select, tuple_
 from sqlalchemy.orm import QueryableAttribute, Session
 
+from notes_api.clock import Clock
 from notes_api.http.problems import InvalidCursor
 
 EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 MICROSECOND = timedelta(microseconds=1)
 FINGERPRINT_LENGTH = 16
+CURSOR_LIFETIME = timedelta(hours=24)
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,39 +57,63 @@ def microseconds(moment: datetime) -> int:
     return (moment - EPOCH) // MICROSECOND
 
 
-def encode(key: Key, fingerprint: str) -> str:
-    payload = {"k": [microseconds(key.moment), key.id.hex], "f": fingerprint}
-    raw = json.dumps(payload, separators=(",", ":")).encode()
+def _encode(raw: bytes) -> str:
     return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
 
 
-def decode(cursor: str, fingerprint: str) -> Key:
-    """The key a cursor points at.
+def _decode(value: str) -> bytes:
+    raw = base64.b64decode(value + "=" * (-len(value) % 4), altchars=b"-_", validate=True)
+    if _encode(raw) != value:
+        raise ValueError("noncanonical base64url")
+    return raw
 
-    ``InvalidCursor`` when it is malformed or was issued for another view.
-    """
-    try:
-        raw = base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4))
-        payload: Any = json.loads(raw)
-        if not isinstance(payload, dict):
-            raise ValueError("cursor payload is not an object")
-        sort_key, issued_for = payload["k"], payload["f"]
-        if (
-            not isinstance(sort_key, list)
-            or len(sort_key) != 2
-            or not isinstance(sort_key[0], int)
-            or isinstance(sort_key[0], bool)
-            or not isinstance(sort_key[1], str)
-            or not isinstance(issued_for, str)
-        ):
-            raise ValueError("cursor payload has the wrong shape")
-        # Integer arithmetic keeps every microsecond; float seconds would round at this magnitude.
-        key = Key(EPOCH + sort_key[0] * MICROSECOND, uuid.UUID(hex=sort_key[1]))
-    except (ValueError, TypeError, KeyError, OverflowError):
-        raise InvalidCursor() from None
-    if issued_for != fingerprint:
-        raise InvalidCursor()
-    return key
+
+class CursorCodec:
+    def __init__(self, signing_key: bytes, clock: Clock) -> None:
+        if len(signing_key) != 32:
+            raise ValueError("cursor signing key must be 32 bytes")
+        self._signing_key = signing_key
+        self._clock = clock
+
+    def encode(self, key: Key, fingerprint: str) -> str:
+        payload = {
+            "k": [microseconds(key.moment), key.id.hex],
+            "f": fingerprint,
+            "exp": microseconds(self._clock.now() + CURSOR_LIFETIME),
+        }
+        signed = "v1." + _encode(json.dumps(payload, separators=(",", ":")).encode())
+        signature = hmac.digest(self._signing_key, signed.encode("ascii"), "sha256")
+        return signed + "." + _encode(signature)
+
+    def decode(self, cursor: str, fingerprint: str) -> Key:
+        try:
+            if len(cursor) > 4096:
+                raise ValueError("oversize cursor")
+            version, encoded, signature = cursor.split(".")
+            if version != "v1":
+                raise ValueError("unknown cursor version")
+            signed = version + "." + encoded
+            expected = hmac.digest(self._signing_key, signed.encode("ascii"), "sha256")
+            if not hmac.compare_digest(expected, _decode(signature)):
+                raise ValueError("invalid signature")
+            payload = json.loads(_decode(encoded))
+            if not isinstance(payload, dict) or set(payload) != {"k", "f", "exp"}:
+                raise ValueError("invalid cursor payload")
+            sort_key, issued_for, expires = payload["k"], payload["f"], payload["exp"]
+            if (
+                not isinstance(sort_key, list)
+                or len(sort_key) != 2
+                or type(sort_key[0]) is not int
+                or not isinstance(sort_key[1], str)
+                or not isinstance(issued_for, str)
+                or type(expires) is not int
+                or expires <= microseconds(self._clock.now())
+                or issued_for != fingerprint
+            ):
+                raise ValueError("invalid or expired cursor")
+            return Key(EPOCH + sort_key[0] * MICROSECOND, uuid.UUID(hex=sort_key[1]))
+        except (ValueError, TypeError, KeyError, OverflowError):
+            raise InvalidCursor() from None
 
 
 def paginate[T](
@@ -100,17 +126,18 @@ def paginate[T](
     limit: int,
     cursor: str | None,
     fingerprint: str,
+    codec: CursorCodec,
     descending: bool = True,
 ) -> Page[T]:
     """One page of ``statement`` in ``moment DESC, id DESC`` order (ascending when ``descending`` is false),
     continuing after ``cursor`` when given."""
     if cursor is not None:
-        after = decode(cursor, fingerprint)
+        after = codec.decode(cursor, fingerprint)
         position, last = tuple_(moment, id_column), (after.moment, after.id)
         statement = statement.where(position < last if descending else position > last)
     order = (moment.desc(), id_column.desc()) if descending else (moment.asc(), id_column.asc())
     statement = statement.order_by(*order).limit(limit + 1)
     rows = list(session.execute(statement).scalars())
     items = rows[:limit]
-    next_cursor = encode(key_of(items[-1]), fingerprint) if len(rows) > limit else None
+    next_cursor = codec.encode(key_of(items[-1]), fingerprint) if len(rows) > limit else None
     return Page(items, next_cursor)

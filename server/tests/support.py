@@ -68,6 +68,7 @@ def settings_for(database_url: str, issuer: LocalIssuer | None = None, **overrid
     issuer = issuer or default_issuer()
     values: dict[str, Any] = {
         "database_url": database_url,
+        "cursor_signing_key": "01" * 32,
         "oidc_issuer": issuer.issuer,
         "oidc_audience": issuer.audience,
         "oidc_jwks": json.dumps(issuer.jwks),

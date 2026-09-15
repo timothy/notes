@@ -150,7 +150,14 @@ def approvals_of(session: Session, request_id: uuid.UUID) -> list[Approval]:
 
 
 def list_for_note(
-    session: Session, *, caller: User, view: NoteView, status: str, limit: int, cursor: str | None
+    session: Session,
+    *,
+    caller: User,
+    view: NoteView,
+    status: str,
+    limit: int,
+    cursor: str | None,
+    codec: cursors.CursorCodec,
 ) -> cursors.Page[RequestView]:
     """One page of the note's requests the caller may inspect, newest first: every request with ``status``
     for an owner, their own for anyone else, so a reader who never proposed gets an empty page."""
@@ -159,7 +166,12 @@ def list_for_note(
         statement = statement.where(EditRequest.proposer_id == caller.id)
     filters = {"noteId": str(view.note.id), "status": status}
     page = _page(
-        session, statement, limit, cursor, cursors.fingerprint(caller.id, NOTE_COLLECTION, filters, limit)
+        session,
+        statement,
+        limit,
+        cursor,
+        codec,
+        cursors.fingerprint(caller.id, NOTE_COLLECTION, filters, limit),
     )
     return cursors.Page(views_for(session, page.items, caller, known={view.note.id: view}), page.next_cursor)
 
@@ -173,6 +185,7 @@ def inbox(
     state: str,
     limit: int,
     cursor: str | None,
+    codec: cursors.CursorCodec,
     now: datetime,
 ) -> cursors.Page[RequestView]:
     """One page of the caller's inbox, newest first.
@@ -196,13 +209,23 @@ def inbox(
         statement = statement.where(EditRequest.proposer_id == caller.id, readable)
     filters = {"view": view, "status": status, "state": state}
     page = _page(
-        session, statement, limit, cursor, cursors.fingerprint(caller.id, INBOX_COLLECTION, filters, limit)
+        session,
+        statement,
+        limit,
+        cursor,
+        codec,
+        cursors.fingerprint(caller.id, INBOX_COLLECTION, filters, limit),
     )
     return cursors.Page(views_for(session, page.items, caller), page.next_cursor)
 
 
 def _page(
-    session: Session, statement: Select[tuple[EditRequest]], limit: int, cursor: str | None, fingerprint: str
+    session: Session,
+    statement: Select[tuple[EditRequest]],
+    limit: int,
+    cursor: str | None,
+    codec: cursors.CursorCodec,
+    fingerprint: str,
 ) -> cursors.Page[EditRequest]:
     return cursors.paginate(
         session,
@@ -212,6 +235,7 @@ def _page(
         key_of=lambda row: cursors.Key(row.created_at, row.id),
         limit=limit,
         cursor=cursor,
+        codec=codec,
         fingerprint=fingerprint,
     )
 

@@ -1,7 +1,7 @@
 """Alembic environment: migrates the schema declared by ``notes_api.models``.
 
-The database URL comes from ``Settings`` (``DATABASE_URL``) unless the caller set ``sqlalchemy.url``, so the
-migration step and the application read one configuration and fail the same way when it is missing.
+The database URL comes from ``DatabaseSettings`` (``DATABASE_URL``) unless the caller set
+``sqlalchemy.url``. Database maintenance does not require API identity or cursor secrets.
 """
 
 from __future__ import annotations
@@ -9,12 +9,12 @@ from __future__ import annotations
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 
-from notes_api.config import load_settings
+from notes_api.config import load_database_settings
 from notes_api.models import Base
 
 config = context.config
 if not config.get_main_option("sqlalchemy.url"):
-    config.set_main_option("sqlalchemy.url", load_settings().database_url.replace("%", "%%"))
+    config.set_main_option("sqlalchemy.url", load_database_settings().database_url.replace("%", "%%"))
 target_metadata = Base.metadata
 
 

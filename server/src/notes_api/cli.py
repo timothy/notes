@@ -4,8 +4,7 @@
 everything that hangs off them (owners, tags, shares, comments, edit requests, approvals, request
 comments) through the foreign keys. Expiry is already enforced at read time, so this only reclaims
 storage; run it from an external scheduler such as a cron job or a Kubernetes CronJob using the same
-image and the same environment as the server. It reads the same settings as the server and fails the
-same way when they are missing.
+image and only DATABASE_URL. Missing database configuration fails without exposing its value.
 """
 
 from __future__ import annotations
@@ -21,7 +20,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from notes_api import uow
 from notes_api.clock import SystemClock
-from notes_api.config import ConfigurationError, load_settings
+from notes_api.config import ConfigurationError, load_database_settings
 from notes_api.db import make_engine, make_session_factory
 from notes_api.models import Note
 
@@ -44,7 +43,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.parse_args(argv)
     try:
-        settings = load_settings()
+        settings = load_database_settings()
     except ConfigurationError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2

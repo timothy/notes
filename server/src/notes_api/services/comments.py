@@ -31,7 +31,13 @@ def etag(comment: Comment) -> str:
 
 
 def list_comments(
-    session: Session, *, caller: User, view: NoteView, limit: int, cursor: str | None
+    session: Session,
+    *,
+    caller: User,
+    view: NoteView,
+    limit: int,
+    cursor: str | None,
+    codec: cursors.CursorCodec,
 ) -> cursors.Page[Comment]:
     """The note's comments, oldest first (``createdAt ASC, id ASC``)."""
     return cursors.paginate(
@@ -42,6 +48,7 @@ def list_comments(
         key_of=lambda row: cursors.Key(row.created_at, row.id),
         limit=limit,
         cursor=cursor,
+        codec=codec,
         fingerprint=cursors.fingerprint(caller.id, COLLECTION, {"noteId": str(view.note.id)}, limit),
         descending=False,
     )

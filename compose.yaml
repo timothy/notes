@@ -1,6 +1,6 @@
 # The local stack: PostgreSQL, the one-shot migration, then the API.
 #   docker compose build
-#   docker compose run --rm --no-deps -T api python -m notes_api.dev_issuer env > .env
+#   server/scripts/bootstrap.sh
 #   docker compose up --wait      then      curl -si http://127.0.0.1:8000/healthz
 # The api and migrate services run with the same hardening a production deployment should use.
 # Feature floor: Compose 2.24. NOTES_API_IMAGE overrides the image (the smoke test and CI set it);
@@ -13,15 +13,16 @@ x-hardened: &hardened
   security_opt: ["no-new-privileges:true"]
   tmpfs: [/tmp]
 
-# The server's settings, shared by api and migrate (Alembic reads the same Settings and fails the same way).
+# API settings. Database maintenance requires only DATABASE_URL.
 # OIDC_* come from the shell or from a .env next to this file, which the dev issuer writes for local use
-# (see above); an unset variable is passed as empty, which the server treats as unset and refuses to start.
+# (see above); bootstrap also generates CURSOR_SIGNING_KEY. An unset variable is passed as empty, which the server treats as unset and refuses to start.
 x-app-env: &app-env
   DATABASE_URL: postgresql+psycopg://notes:notes@db:5432/notes
   OIDC_ISSUER: ${OIDC_ISSUER:-}
   OIDC_AUDIENCE: ${OIDC_AUDIENCE:-}
   OIDC_JWKS: ${OIDC_JWKS:-}
   OIDC_JWKS_URL: ${OIDC_JWKS_URL:-}
+  CURSOR_SIGNING_KEY: ${CURSOR_SIGNING_KEY:-}
 
 services:
   db:
@@ -45,9 +46,9 @@ services:
   migrate:
     <<: *hardened
     image: ${NOTES_API_IMAGE:-notes-api:dev}
-    build: .
     command: ["alembic", "-c", "/app/alembic.ini", "upgrade", "head"]
-    environment: *app-env
+    environment:
+      DATABASE_URL: postgresql+psycopg://notes:notes@db:5432/notes
     depends_on:
       db:
         condition: service_healthy

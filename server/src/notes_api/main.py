@@ -14,6 +14,7 @@ from notes_api.auth.jwt import TokenVerifier
 from notes_api.clock import Clock, SystemClock
 from notes_api.config import Settings, load_settings
 from notes_api.contract import load_contract
+from notes_api.cursors import CursorCodec
 from notes_api.db import make_engine, make_session_factory
 from notes_api.http.health import install_health_routes
 from notes_api.http.middleware import NoStoreMiddleware
@@ -36,13 +37,21 @@ def create_base_app(settings: Settings | None = None, clock: Clock | None = None
     """
     settings = settings or load_settings()
     app = FastAPI(
-        title="Notes API", version=CONTRACT_VERSION, openapi_url=None, docs_url=None, redoc_url=None
+        title="Notes API",
+        version=CONTRACT_VERSION,
+        openapi_url=None,
+        docs_url=None,
+        redoc_url=None,
+        redirect_slashes=False,
     )
     app.state.settings = settings
     app.state.contract = load_contract(settings.contract_path)
     app.state.engine = make_engine(settings.database_url)
     app.state.session_factory = make_session_factory(app.state.engine)
     app.state.clock = clock or SystemClock()
+    app.state.cursor_codec = CursorCodec(
+        bytes.fromhex(settings.cursor_signing_key.get_secret_value()), app.state.clock
+    )
     app.state.verifier = TokenVerifier(settings)
     app.add_middleware(NoStoreMiddleware)
     app.add_middleware(RequestLogMiddleware)  # added last, so it is outermost and times everything

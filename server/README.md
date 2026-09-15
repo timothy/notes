@@ -11,31 +11,21 @@ The package is `src/notes_api`: `main.py` builds the application (`create_app`);
 
 ## Development
 
+From the repository root:
+
 ```sh
-cd server
-uv sync --locked
-uv run ruff format src tests scripts && uv run ruff check . && uv run ruff format --check . && uv run mypy && uv run pytest
+make check
+make test
+make test-postgres
 ```
 
-That line is the gate every change passes before it is pushed: formatting, lint, `mypy --strict` over `src`, `tests`, and `scripts`, and the suite. Python 3.12 and [uv](https://docs.astral.sh/uv/) are the only prerequisites; the suite needs no Docker.
+`make check` installs locked server dependencies and checks formatting without changing files, lint, strict typing, generated models, and the contract. Python 3.12 and [uv](https://docs.astral.sh/uv/) are the host prerequisites for checks and SQLite tests. PostgreSQL tests also need Docker with Compose 2.24 or newer. For intentional formatting changes, run `cd server && uv run ruff format src tests scripts`.
 
 ### Tests on both databases
 
-The suite runs on SQLite by default: each test gets a fresh file database in its temporary directory. To run the same suite against PostgreSQL, point `NOTES_API_TEST_DATABASE_URL` at an empty database; each test then drops and recreates the schema there. With the compose database from the repository root:
+`make test` gives every test a fresh SQLite file and clears any inherited `NOTES_API_TEST_DATABASE_URL`. `make test-postgres` creates a uniquely named disposable PostgreSQL stack, waits for readiness, runs the same suite, and removes that stack and its volume. It uses an automatically allocated localhost port and ignores development Compose, identity, and database overrides.
 
-```sh
-docker compose up -d db
-docker compose exec -T db createdb -U notes notes_test
-cd server && NOTES_API_TEST_DATABASE_URL=postgresql+psycopg://notes:notes@127.0.0.1:5432/notes_test uv run pytest
-```
-
-or with a throwaway container:
-
-```sh
-docker run -d --rm --name notes-pg -p 127.0.0.1:55432:5432 -e POSTGRES_USER=notes -e POSTGRES_PASSWORD=notes -e POSTGRES_DB=notes_test postgres:17.11
-NOTES_API_TEST_DATABASE_URL=postgresql+psycopg://notes:notes@127.0.0.1:55432/notes_test uv run pytest
-docker stop notes-pg
-```
+For a test database provisioned separately, `cd server && NOTES_API_TEST_DATABASE_URL=postgresql+psycopg://... uv run pytest` remains available. Each test **drops and recreates the schema at that URL**; use only a disposable database. The Makefile runner allocates one for you.
 
 CI runs both in [`.github/workflows/server.yml`](../.github/workflows/server.yml): the `checks` job on SQLite and the `postgres` job against a PostgreSQL 17 service container. The PostgreSQL job is the proof for everything dialect-specific: `tests/test_schema.py` runs `alembic upgrade head`, `alembic check` (the models match the migration), and `downgrade base` against that database; the locking selects run as written (`FOR UPDATE` and `FOR SHARE`, which SQLite ignores); and the thread-based race tests run against it. The image workflow adds a second migration proof by running the real `migrate` container against PostgreSQL 17 (see [Smoke test](#smoke-test)).
 
@@ -55,12 +45,12 @@ uv run scripts/gen_models.py --check    # exit 1 with a diff when the committed 
 The compose stack in [Build and run](#build-and-run) is the complete local deployment. To run the server from the checkout instead, against the compose database:
 
 ```sh
-docker compose up -d db                                        # from the repository root
+make bootstrap                                                # from the repository root
+docker compose up -d db
 cd server
-uv run python -m notes_api.dev_issuer env > ../.env            # a development identity provider (gitignored)
 export DATABASE_URL=postgresql+psycopg://notes:notes@127.0.0.1:5432/notes
-uv run --env-file ../.env alembic upgrade head
-uv run --env-file ../.env uvicorn --factory notes_api.main:create_app --port 8000
+uv run alembic upgrade head
+uv run --env-file ../.env uvicorn --factory notes_api.main:create_app --port 8000 --no-access-log
 ```
 
 and, in another shell from `server/`:
@@ -76,7 +66,7 @@ The same `.env` serves the compose stack, so the two can be used interchangeably
 
 ### Validation
 
-Handlers are plain `def` functions in FastAPI's threadpool, and bodies are never declared as FastAPI parameters, so the order of checks is the contract's, not the framework's. `http/bodies.py::parse_body` reads the body and answers `415` for anything but `application/json`, `400 malformed_request` for unparseable JSON (or a missing body when one is required), then `422 validation_failed` with one `errors[]` entry per violation, each with `location: body`, an RFC 6901 pointer, and a message, straight from the spec's schema for that operation (`contract.py::Contract.validate_body`). An optional body that is omitted validates as `{}`. The one rule beyond the schemas: no string in a body or in the `q` and `tag` query parameters may contain U+0000, because PostgreSQL text cannot store it (found by the conformance run); it is `422` at the field's pointer with detail `must not contain NUL characters`, `location: query` for parameters. Query, header, and path parameters are validated to `422` naming the parameter; a malformed `If-Match` is `400`; an invalid cursor is `400 invalid_cursor`.
+Handlers are plain `def` functions in FastAPI's threadpool, and bodies are never declared as FastAPI parameters, so the order of checks is the contract's, not the framework's. `http/bodies.py::parse_body` reads the body and answers `415` for anything but `application/json`, `400 malformed_request` for unparseable JSON (or a missing body when one is required), then `422 validation_failed` with one `errors[]` entry per violation, each with `location: body`, an RFC 6901 pointer, and a message, straight from the spec's schema for that operation (`contract.py::Contract.validate_body`). An optional body that is omitted validates as `{}`. Before schema error rendering, lone Unicode surrogates in JSON values or property names are rejected with `422 validation_failed`; invalid property names use the safe root pointer `""`. Valid Unicode, including emoji, is preserved. Another rule beyond the schemas: no string in a body or in the `q` and `tag` query parameters may contain U+0000, because PostgreSQL text cannot store it (found by the conformance run); it is `422` at the field's pointer with detail `must not contain NUL characters`, `location: query` for parameters. Query, header, and path parameters are validated to `422` naming the parameter; a malformed `If-Match` is `400`; an invalid cursor is `400 invalid_cursor`.
 
 ### The check ladder
 
@@ -87,14 +77,14 @@ Every handler resolves in the same order, so the same request always gets the sa
 3. The body: `415`, `400`, `422` as above. Bodies are validated before visibility and authorization, so a malformed body is `422` for anyone, and no lock is held while a body is read.
 4. `404` for a resource the caller cannot see, including one that exists but is hidden, expired, or reached through the wrong parent (a comment under another note, a request comment under another request, a share under another note).
 5. `403` for a forbidden action on a visible resource.
-6. The precondition: `428` for a missing `If-Match`, `400` for a weak tag, a wildcard, or a list.
+6. The precondition: `428` for a missing `If-Match`, `400` for a weak tag, a wildcard, a list, or repeated `If-Match` fields (even identical ones).
 7. `412` when the version does not match; the version check precedes every lifecycle check, so a stale ETag on a trashed note or a closed request is `412`.
 8. `409` for the lifecycle (`note_not_active`, `request_not_open`, `note_already_active`), `request_not_open` before `note_not_active` because a closed record is immutable whatever happens to its note.
 9. Semantic `422` (an unknown user or recipient, a proposal identical to its base, `requiredApprovals` above the owner count, `finalContent` under peer approval).
 10. Business `409` (`duplicate_share`, `duplicate_membership`, `duplicate_owner`, `direct_edit_not_allowed`, `approval_required`, `merge_conflict`, `last_admin`, `author_cannot_be_removed`).
 11. The write, and the response with the new `ETag`.
 
-Steps 4 to 11 run inside one transaction with the locks below. An unknown route or an undeclared method on a known path is `404 not_found`; the server never emits a status the contract does not declare.
+Steps 4 to 11 run inside one transaction with the locks below. An unknown route, a trailing slash, or an undeclared method on a known path is `404 not_found` without a redirect; the server never emits a status the contract does not declare.
 
 ### Versions
 
@@ -128,10 +118,10 @@ Every test gets its own application and database (`tests/conftest.py`): a SQLite
 
 Where the contract leaves a choice, the server's choice is fixed by a test and recorded in the resource's section below. Choices that belong to no single resource:
 
-- An unknown route or an undeclared method on a known path is `404 not_found`; the server never emits a status the contract does not declare.
+- An unknown route, a trailing slash, or an undeclared method on a known path is `404 not_found` without a redirect; the server never emits a status the contract does not declare.
 - A missing `typ` header on a token is accepted; a present one must name an access token (`at+jwt` or `JWT`, case-insensitive).
 - `displayName` precedence is `name`, `preferred_username`, `user-<sub prefix>`, and it is never refreshed after provisioning.
-- Cursors are bound to the caller as well as the collection, filters, and limit; another user cannot continue your page, and continuing with a changed filter is `400 invalid_cursor`.
+- Cursors are HMAC-SHA256 signed, expire exactly 24 hours after issuance, and bind the caller, collection, filters, and limit. Modified, expired, unsigned, wrong-key, or mismatched cursors return `400 invalid_cursor`. See [Configuration](#configuration) for shared keys and rollout.
 - No string in a request body or in the `q` and `tag` query parameters may contain U+0000 (see [Validation](#validation)).
 
 ### Users and teams
@@ -202,29 +192,42 @@ docker buildx version
 
 #### Build and run
 
-From the repository root:
+Startup needs Docker with Compose 2.24 or newer, Make, and Bash. The examples also use curl. From the repository root:
 
 ```sh
-docker compose build
-docker compose run --rm --no-deps -T api python -m notes_api.dev_issuer env > .env
-docker compose up --wait
-TOKEN=$(docker compose run --rm --no-deps -T api python -m notes_api.dev_issuer token --sub ada --name 'Ada Okafor')
+make up
+TOKEN=$(make -s token)
 curl -si -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8000/v1/me
-docker compose down -v
+make down
 ```
 
-[`compose.yaml`](../compose.yaml) starts PostgreSQL 17 (`db`), applies the migration in a one-shot container (`migrate`), and starts the API (`api`) once the migration has completed. The `api` and `migrate` services run with a read-only root filesystem, no capabilities, `no-new-privileges`, and a tmpfs at `/tmp`, the same constraints a deployment should use. If port 8000 or 5432 is taken on your machine, set `NOTES_API_PORT` or `NOTES_API_DB_PORT`.
+The complete sequence without Make is `docker compose build`, `server/scripts/bootstrap.sh`, then `docker compose up --wait --no-build`. Bootstrap writes secrets atomically with mode 0600. It creates `.env` only when absent, preserves existing identity credentials, and appends a missing cursor key. Repeating bootstrap leaves a complete `.env` unchanged. Do not overwrite an existing file by redirecting the issuer's output into it.
 
-The server refuses to start without an identity provider, and the stack has none, so the image carries a development one: `python -m notes_api.dev_issuer env` generates a key pair and prints the `.env` lines the stack reads (`OIDC_ISSUER`, `OIDC_AUDIENCE`, the public key as an inline `OIDC_JWKS`, and the private key as `NOTES_DEV_ISSUER_KEY`), and `token --sub <subject> --name <display name>` mints an RS256 access token with it; every distinct `--sub` is a distinct user. The file is gitignored. It is a development convenience only: a deployment sets `OIDC_JWKS_URL` to a real provider and never sets `NOTES_DEV_ISSUER_KEY`.
+[`compose.yaml`](../compose.yaml) has one image build definition. PostgreSQL 17 (`db`) becomes healthy, the same image applies migrations (`migrate`), then the API (`api`) starts. Both application services use a read-only root filesystem, no capabilities, `no-new-privileges`, and a tmpfs at `/tmp`. `make down` preserves the volume; deleting a volume discards its notes. Set `NOTES_API_PORT` or `NOTES_API_DB_PORT` if 8000 or 5432 is busy.
 
-#### Smoke test
+The image includes a development issuer: `python -m notes_api.dev_issuer env` prints `OIDC_ISSUER`, `OIDC_AUDIENCE`, public `OIDC_JWKS`, private `NOTES_DEV_ISSUER_KEY`, and `CURSOR_SIGNING_KEY`. Bootstrap stores these in the gitignored `.env`. `make token SUB=ben NAME="Ben Ortiz"` mints another persona; each distinct subject is a distinct user. Deployments use a real identity provider and never set `NOTES_DEV_ISSUER_KEY`.
+
+#### Smoke test and end-to-end verification
 
 ```sh
-docker build -t notes-api:dev .
-NOTES_API_IMAGE=notes-api:dev server/scripts/smoke_image.sh
+make smoke
+make e2e
 ```
 
-The script drives `compose.yaml` and asserts the container contract: the image refuses to start without `DATABASE_URL` or without the OIDC settings, naming the variable and never the database password; the stack comes up with keys from the image's own dev issuer; the api runs as uid 10001 with no capabilities, `no-new-privileges`, uvicorn as PID 1, a read-only root filesystem, a writable `/tmp`, and no uv or test tooling; the probes answer and every unknown route or undeclared method is the contract's `404` Problem; `GET /v1/me` is `401` with the bearer challenge without a token, `401` with `error="invalid_token"` with a bad one, and `200` with a minted one; readiness follows the database down and back up; the schema is at head and migrating again is a no-op; `notes-api purge-expired` runs from the image against the stack's database; SIGTERM stops the api cleanly; the source label is set. CI runs the same script in [`.github/workflows/image.yml`](../.github/workflows/image.yml) after hadolint and a Trivy scan for fixable CRITICAL and HIGH vulnerabilities.
+Both commands build the image, then allocate unique Compose projects with private temporary environment files and ephemeral localhost ports. They ignore ambient development Compose and identity settings, and cleanup explicitly removes only their own projects. Host prerequisites are Python 3.12, curl, Bash, and Docker/Compose; `make e2e` also uses uv for the contract validator.
+
+To verify an image already built:
+
+```sh
+NOTES_API_IMAGE=notes-api:dev server/scripts/smoke_image.sh
+cd server && NOTES_API_IMAGE=notes-api:dev uv run python scripts/e2e.py
+```
+
+Smoke verifies fail-fast configuration, hardening, probes, authentication, unknown routes, trailing slashes, privacy of actual container logs, five-minute JWKS refresh with a controlled cache clock, cursor expiry at exactly 24 hours, readiness during database interruption, migration idempotence, database-only purge, and graceful SIGTERM. CI runs it after hadolint and Trivy.
+
+The curl harness exercises all 47 operations with dynamic IDs and ETags, including sharing, permissions, comments, co-ownership, approvals, conflicts, merge, revocation, and trash/restore. Every API response is checked against the OpenAPI contract. It also verifies Unicode errors, duplicate headers, modified cursors, cursor use across two API replicas, and successful and failing smoke cleanup while a control stack retains its note, credentials, volume, and running state. CI runs the same harness.
+
+The runner prints its artifact directory (a temporary directory by default); set `NOTES_API_ARTIFACT_DIR` to choose another directory outside the checkout. It retains a redacted curl transcript, headers, response bodies, container logs, and a summary. `scripts/curl_client.py::CurlSession` accepts a base URL and persona tokens for configurable connection settings; the default runner always creates disposable resources. Do not commit execution logs or credentials. `make verify` runs checks, both database suites, smoke, and end-to-end verification sequentially.
 
 ### Configuration
 
@@ -233,6 +236,7 @@ Settings are read from the environment by pydantic-settings with no prefix (`not
 | Variable | Required | Notes |
 | --- | --- | --- |
 | `DATABASE_URL` | yes | SQLAlchemy URL; in a deployment `postgresql+psycopg://user:password@host:5432/db`. It carries a password: inject it from a secret store, never bake it into an image or commit it. A process without it refuses to start. SQLite URLs are for tests only. |
+| `CURSOR_SIGNING_KEY` | yes for API startup | 32 random bytes encoded as 64 hexadecimal characters. Bootstrap generates it for development; deployments inject one shared secret across all replicas. |
 | `CONTRACT_PATH` | preset in the image | `/app/openapi.yaml`. Outside a container it defaults to the checkout's `openapi.yaml`. |
 | `OIDC_ISSUER`, `OIDC_AUDIENCE` | yes | The `iss` and `aud` every bearer token must carry. A process without them refuses to start. |
 | `OIDC_JWKS_URL` or `OIDC_JWKS` | exactly one | Where the issuer's signing keys come from: the JWKS URL of a real identity provider (fetched on demand, cached in memory for five minutes, never at start-up), or an inline JWKS document (JSON) as the compose stack and the tests use. Both or neither refuses to start; an empty value counts as unset. |
@@ -240,17 +244,21 @@ Settings are read from the environment by pydantic-settings with no prefix (`not
 | `FORWARDED_ALLOW_IPS` | behind a proxy | uvicorn trusts `X-Forwarded-*` headers from loopback only. Set the ingress CIDR, never `*`. |
 | `WEB_CONCURRENCY` | leave unset | One uvicorn worker per container; scale with replicas. |
 
+Migrations and purge read only `DATABASE_URL` through `DatabaseSettings`; OIDC and cursor secrets are required by the API, not database maintenance.
+
+**Cursor rollout:** `v1.<base64url-payload>.<base64url-signature>` authenticates the version, pagination key, caller/query binding, and integer expiry. Never generate a fallback key per worker. Replicas must share `CURSOR_SIGNING_KEY`. Rotation invalidates existing cursors immediately; clients restart from the first page after `400 invalid_cursor`. The transition rejects legacy unsigned cursors: coordinate the application rollout to avoid routing pagination between signed and unsigned implementations. No database migration is needed.
+
 A misconfigured process prints which variables are missing or invalid and exits; the message never contains a value, so the database password cannot reach the logs that way.
 
 ### Authentication
 
-Requests to `/v1` carry `Authorization: Bearer <access token>`. The token must be a JWT signed with `RS256` or `ES256` by a key the configured source holds (selected by `kid`), with `iss` and `aud` equal to the settings, `exp` and `sub` present, and `exp` and `nbf` valid within a 60-second leeway; a `typ` header, when present, must be `at+jwt` or `JWT`. Anything else is the contract's `401` with `WWW-Authenticate: Bearer realm="notes-api"`, plus `error="invalid_token"` when a token was present; the response never says why. Time claims are checked against system time.
+Requests to `/v1` carry `Authorization: Bearer <access token>`. The token must be a JWT signed with `RS256` or `ES256` by a key the configured source holds (selected by `kid`), with `iss` and `aud` equal to the settings, `exp` and `sub` present, and `exp` and `nbf` valid within a 60-second leeway; a `typ` header, when present, must be `at+jwt` or `JWT`. Anything else is the contract's `401` with `WWW-Authenticate: Bearer realm="notes-api"`, plus `error="invalid_token"` when a token was present; the response never says why. Time claims are checked against system time. JWKS documents are cached for five minutes; individual keys are not cached beyond that lifetime. Once the document expires, a removed key is rejected and a failed refresh rejects authentication safely.
 
 The validated `(iss, sub)` maps to one local user, created on first contact with `displayName` taken from the `name` claim, else `preferred_username`, else `user-` and the first eight characters of `sub`, cut to 200 code points. Concurrent first requests create one row: the insert runs under a savepoint and a constraint violation re-selects the winner.
 
 ### Request log
 
-Every request except the probes writes one JSON line to stdout (`docker compose logs api` shows them): `time`, `request_id`, `method`, `route` (the matched template, `null` for an unknown route), `path`, `status`, `code` (the Problem code, `null` on success), `user` (the caller's id once authenticated), and `duration_ms`. Never the query string, headers, or bodies, so search text, tokens, and note content cannot reach the logs. An incoming `X-Request-Id` is kept when it matches `^[A-Za-z0-9._-]{1,128}$` and replaced otherwise; every response echoes the id in `X-Request-Id`.
+The container and documented local command disable Uvicorn access logging (`--no-access-log`), which would otherwise expose query strings. Every request except the probes writes one JSON line to stdout (`docker compose logs api` shows them): `time`, `request_id`, `method`, `route` (the matched template, `null` for an unknown route), `path`, `status`, `code` (the Problem code, `null` on success), `user` (the caller's id once authenticated), and `duration_ms`. Never the query string, headers, or bodies, so search text, tokens, and note content cannot reach the logs. An incoming `X-Request-Id` is kept when it matches `^[A-Za-z0-9._-]{1,128}$` and replaced otherwise; every response echoes the id in `X-Request-Id`.
 
 ### Probes
 
@@ -267,11 +275,11 @@ Run `alembic upgrade head` as a one-shot job with the same image before rolling 
 docker run --rm -e DATABASE_URL=postgresql+psycopg://... notes-api:dev alembic -c /app/alembic.ini upgrade head
 ```
 
-A migration must stay compatible with the image currently running, because old and new replicas share the schema during a rollout. Alembic reads `DATABASE_URL` through the same `Settings` as the server. `tests/test_schema.py` proves on every run that the migration and the models produce the same schema and that the downgrade works, on SQLite and, in CI, on PostgreSQL.
+A migration must stay compatible with the image currently running, because old and new replicas share the schema during a rollout. Alembic reads only `DATABASE_URL` through `DatabaseSettings`, without OIDC or cursor secrets. `tests/test_schema.py` proves on every run that the migration and the models produce the same schema and that the downgrade works, on SQLite and, in CI, on PostgreSQL.
 
 ### Purging expired notes
 
-Trashed notes expire exactly 30 × 24 hours after `deletedAt`; from that instant they are `404` for everyone, purge or no purge. Storage is reclaimed by `notes-api purge-expired`, a console script in the image's virtualenv that deletes every note at or past its expiry together with everything that hangs off it (owners, tags, shares, comments, edit requests, approvals, request comments) and prints `purged N expired notes`. Run it from an external scheduler (a cron job or a Kubernetes CronJob) with the same image and the same environment as the server; it reads the same settings and refuses to run without them. Locally: `docker compose run --rm -T api notes-api purge-expired`.
+Trashed notes expire exactly 30 × 24 hours after `deletedAt`; from that instant they are `404` for everyone, purge or no purge. Storage is reclaimed by `notes-api purge-expired`, a console script in the image's virtualenv that deletes every note at or past its expiry together with everything that hangs off it (owners, tags, shares, comments, edit requests, approvals, request comments) and prints `purged N expired notes`. Run it from an external scheduler (a cron job or a Kubernetes CronJob) with the same image and only `DATABASE_URL`; it refuses to run without that setting. Locally: `docker compose run --rm -T migrate notes-api purge-expired`.
 
 ### Deployment constraints
 

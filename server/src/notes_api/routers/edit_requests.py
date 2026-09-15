@@ -13,7 +13,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from notes_api import serializers, uow
-from notes_api.etags import parse_if_match
+from notes_api.etags import read_if_match
 from notes_api.generated.schemas import EditRequestStatus, InboxView, NoteState
 from notes_api.http.bodies import parse_body
 from notes_api.http.deps import CurrentUser
@@ -47,7 +47,13 @@ def list_note_edit_requests(
     with sessions(request)() as session, uow.transaction(session, "list_note_edit_requests"):
         view = notes.read(session, caller=user, note_id=noteId, now=clock(request).now())
         page = edit_requests.list_for_note(
-            session, caller=user, view=view, status=status.value, limit=limit, cursor=cursor
+            session,
+            caller=user,
+            view=view,
+            status=status.value,
+            limit=limit,
+            cursor=cursor,
+            codec=request.app.state.cursor_codec,
         )
         items = [serializers.edit_request_summary(rv) for rv in page.items]
         body = serializers.page(items, page.next_cursor)
@@ -72,6 +78,7 @@ def list_edit_requests(
             state=state.value,
             limit=limit,
             cursor=cursor,
+            codec=request.app.state.cursor_codec,
             now=clock(request).now(),
         )
         items = [serializers.edit_request_summary(rv) for rv in page.items]
@@ -119,7 +126,7 @@ def revise_edit_request(user: CurrentUser, request: Request, requestId: uuid.UUI
     with sessions(request)() as session, uow.transaction(session, "revise_edit_request"):
         rv = edit_requests.inspect(session, caller=user, request_id=requestId, now=now, lock=True)
         edit_requests.require_proposer_with_propose(rv, user)
-        edit_requests.require_version(rv, parse_if_match(request.headers.get("if-match")))
+        edit_requests.require_version(rv, read_if_match(request.headers))
         proposed = body.get("proposedContent")
         rv = edit_requests.revise(
             session,
@@ -139,7 +146,7 @@ def withdraw_edit_request(user: CurrentUser, request: Request, requestId: uuid.U
     with sessions(request)() as session, uow.transaction(session, "withdraw_edit_request"):
         rv = edit_requests.inspect(session, caller=user, request_id=requestId, now=now, lock=True)
         edit_requests.require_proposer(rv, user)
-        edit_requests.require_version(rv, parse_if_match(request.headers.get("if-match")))
+        edit_requests.require_version(rv, read_if_match(request.headers))
         rv = edit_requests.withdraw(session, rv=rv, now=now)
         payload, etag = serializers.edit_request(rv), rv.etag
     return serializers.json_response(payload, headers={"ETag": etag})
@@ -152,7 +159,7 @@ def reject_edit_request(user: CurrentUser, request: Request, requestId: uuid.UUI
     with sessions(request)() as session, uow.transaction(session, "reject_edit_request"):
         rv = edit_requests.inspect(session, caller=user, request_id=requestId, now=now, lock=True)
         notes.require_owner(rv.note)
-        edit_requests.require_version(rv, parse_if_match(request.headers.get("if-match")))
+        edit_requests.require_version(rv, read_if_match(request.headers))
         rv = edit_requests.reject(session, rv=rv, rejecter=user, reason=body.get("reason"), now=now)
         payload, etag = serializers.edit_request(rv), rv.etag
     return serializers.json_response(payload, headers={"ETag": etag})
@@ -183,7 +190,7 @@ def merge_edit_request(user: CurrentUser, request: Request, requestId: uuid.UUID
     with sessions(request)() as session, uow.transaction(session, "merge_edit_request"):
         rv = edit_requests.inspect(session, caller=user, request_id=requestId, now=now, lock=True)
         notes.require_owner(rv.note)
-        edit_requests.require_version(rv, parse_if_match(request.headers.get("if-match")))
+        edit_requests.require_version(rv, read_if_match(request.headers))
         edit_requests.require_note_version(rv, body["expectedNoteETag"])
         final = body.get("finalContent")
         rv = edit_requests.merge(
@@ -205,7 +212,7 @@ def approve_edit_request(user: CurrentUser, request: Request, requestId: uuid.UU
         rv = edit_requests.inspect(session, caller=user, request_id=requestId, now=now, lock=True)
         approvals.require_not_proposer(rv, user, detail=approvals.SELF_APPROVAL_DETAIL)
         notes.require_owner(rv.note)
-        edit_requests.require_version(rv, parse_if_match(request.headers.get("if-match")))
+        edit_requests.require_version(rv, read_if_match(request.headers))
         rv = approvals.approve(session, rv=rv, approver=user, now=now)
         payload, etag = serializers.edit_request(rv), rv.etag
     return serializers.json_response(payload, headers={"ETag": etag})
@@ -218,7 +225,7 @@ def revoke_edit_request_approval(user: CurrentUser, request: Request, requestId:
         rv = edit_requests.inspect(session, caller=user, request_id=requestId, now=now, lock=True)
         approvals.require_not_proposer(rv, user, detail=None)
         notes.require_owner(rv.note)
-        edit_requests.require_version(rv, parse_if_match(request.headers.get("if-match")))
+        edit_requests.require_version(rv, read_if_match(request.headers))
         rv = approvals.revoke(session, rv=rv, caller=user, now=now)
         payload, etag = serializers.edit_request(rv), rv.etag
     return serializers.json_response(payload, headers={"ETag": etag})

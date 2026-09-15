@@ -13,16 +13,32 @@ from pydantic import ValidationError
 
 from notes_api.config import ConfigurationError, Settings, load_settings
 from notes_api.contract import DEFAULT_CONTRACT_PATH
+from tests.support import settings_for
 
 PASSWORD = "s3cret-db-password"
 POSTGRES_URL = f"postgresql+psycopg://notes:{PASSWORD}@db:5432/notes"
-VARIABLES = ("DATABASE_URL", "CONTRACT_PATH", "OIDC_ISSUER", "OIDC_AUDIENCE", "OIDC_JWKS", "OIDC_JWKS_URL")
+VARIABLES = (
+    "DATABASE_URL",
+    "CURSOR_SIGNING_KEY",
+    "CONTRACT_PATH",
+    "OIDC_ISSUER",
+    "OIDC_AUDIENCE",
+    "OIDC_JWKS",
+    "OIDC_JWKS_URL",
+)
 COMPLETE = {
     "DATABASE_URL": POSTGRES_URL,
+    "CURSOR_SIGNING_KEY": "01" * 32,
     "OIDC_ISSUER": "https://issuer.example",
     "OIDC_AUDIENCE": "notes-api",
     "OIDC_JWKS": '{"keys": []}',
 }
+
+
+@pytest.mark.parametrize("key", ["", "short", "g" * 64, "0" * 63, "0" * 65])
+def test_cursor_signing_key_must_be_32_bytes_of_hex(key: str) -> None:
+    with pytest.raises(ValidationError):
+        settings_for("sqlite://", cursor_signing_key=key)
 
 
 @pytest.fixture
@@ -48,7 +64,7 @@ def test_a_complete_environment_loads(env: pytest.MonkeyPatch) -> None:
     assert settings.oidc_jwks_url is None
 
 
-@pytest.mark.parametrize("name", ["DATABASE_URL", "OIDC_ISSUER", "OIDC_AUDIENCE"])
+@pytest.mark.parametrize("name", ["DATABASE_URL", "OIDC_ISSUER", "OIDC_AUDIENCE", "CURSOR_SIGNING_KEY"])
 def test_each_required_variable_is_required(env: pytest.MonkeyPatch, name: str) -> None:
     env.delenv(name)
     with pytest.raises(ValidationError) as excinfo:

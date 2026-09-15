@@ -178,7 +178,14 @@ class ListFilters:
 
 
 def list_notes(
-    session: Session, *, caller: User, filters: ListFilters, limit: int, cursor: str | None, now: datetime
+    session: Session,
+    *,
+    caller: User,
+    filters: ListFilters,
+    limit: int,
+    cursor: str | None,
+    codec: cursors.CursorCodec,
+    now: datetime,
 ) -> cursors.Page[NoteView]:
     """One page of the notes the caller may read, each once, newest first.
 
@@ -236,6 +243,7 @@ def list_notes(
         key_of=lambda row: cursors.Key(row.created_at, row.id),
         limit=limit,
         cursor=cursor,
+        codec=codec,
         fingerprint=cursors.fingerprint(caller.id, NOTES_COLLECTION, view, limit),
     )
     return cursors.Page(views_for(session, page.items, caller), page.next_cursor)

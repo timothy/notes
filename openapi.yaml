@@ -22,7 +22,8 @@ info:
       resource the caller may not act on is `403`.
 
     The normative design guide is `docs/design-guide.md`. Operation descriptions and schemas in this
-    document are normative too. This is a contract only; there is no reference server.
+    document are normative too. The reference server in `server/` implements all 47 operations and ships
+    as a container image; the repository README documents setup and verification.
   license:
     name: Apache License 2.0
     identifier: Apache-2.0
@@ -2257,7 +2258,8 @@ components:
       description: >-
         Opaque continuation token from a previous page's `nextCursor`. It is bound to the caller, the
         collection, the filters, and the limit, so continue with identical query settings. Invalid, expired,
-        tampered, or mismatched cursors are `400` with code `invalid_cursor`.
+        tampered, or mismatched cursors are `400` with code `invalid_cursor`. The reference server signs
+        cursors and expires each one 24 hours after issuance; clients restart pagination after invalidation.
       schema:
         type: string
         minLength: 1

@@ -16,6 +16,7 @@ import argparse
 import base64
 import json
 import os
+import secrets
 import sys
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
@@ -132,6 +133,7 @@ class DevIssuer:
             "OIDC_AUDIENCE": self.audience,
             "OIDC_JWKS": json.dumps(self.jwks, separators=(",", ":")),
             KEY_VARIABLE: self.private_key_b64(),
+            "CURSOR_SIGNING_KEY": secrets.token_hex(32),
         }
         lines = []
         for name, value in values.items():

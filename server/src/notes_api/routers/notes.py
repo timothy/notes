@@ -11,7 +11,7 @@ from pydantic import StringConstraints
 
 from notes_api import serializers, uow
 from notes_api.contract import FieldError
-from notes_api.etags import parse_if_match
+from notes_api.etags import read_if_match
 from notes_api.generated.schemas import NoteScope, NoteState
 from notes_api.http.bodies import parse_body
 from notes_api.http.deps import CurrentUser
@@ -68,7 +68,13 @@ def list_notes(
     filters = ListFilters(scope=scope.value, state=state.value, q=q, tags=tuple(tag or ()), team_id=teamId)
     with sessions(request)() as session, uow.transaction(session, "list_notes"):
         page = notes.list_notes(
-            session, caller=user, filters=filters, limit=limit, cursor=cursor, now=clock(request).now()
+            session,
+            caller=user,
+            filters=filters,
+            limit=limit,
+            cursor=cursor,
+            codec=request.app.state.cursor_codec,
+            now=clock(request).now(),
         )
         items = [serializers.note_summary(v.note, v.owner_ids, v.tags, v.access) for v in page.items]
         body = serializers.page(items, page.next_cursor)
@@ -89,7 +95,7 @@ def update_note(user: CurrentUser, request: Request, noteId: uuid.UUID) -> JSONR
     with sessions(request)() as session, uow.transaction(session, "update_note"):
         view = notes.lock(session, caller=user, note_id=noteId, now=clock(request).now())
         notes.require_owner(view)
-        notes.require_version(view, parse_if_match(request.headers.get("if-match")))
+        notes.require_version(view, read_if_match(request.headers))
         view = notes.update(
             session,
             view=view,
@@ -107,7 +113,7 @@ def trash_note(user: CurrentUser, request: Request, noteId: uuid.UUID) -> Respon
     with sessions(request)() as session, uow.transaction(session, "trash_note"):
         view = notes.lock(session, caller=user, note_id=noteId, now=clock(request).now())
         notes.require_owner(view)
-        notes.require_version(view, parse_if_match(request.headers.get("if-match")))
+        notes.require_version(view, read_if_match(request.headers))
         etag = notes.trash(session, view=view, clock=clock(request)).etag
     return Response(status_code=204, headers={"ETag": etag})
 
@@ -117,7 +123,7 @@ def restore_note(user: CurrentUser, request: Request, noteId: uuid.UUID) -> JSON
     with sessions(request)() as session, uow.transaction(session, "restore_note"):
         view = notes.lock(session, caller=user, note_id=noteId, now=clock(request).now())
         notes.require_owner(view)
-        notes.require_version(view, parse_if_match(request.headers.get("if-match")))
+        notes.require_version(view, read_if_match(request.headers))
         view = notes.restore(session, view=view, clock=clock(request))
         payload, etag = _payload(view), view.etag
     return serializers.json_response(payload, headers={"ETag": etag})
