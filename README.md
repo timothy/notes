@@ -62,7 +62,7 @@ The price: a change in behaviour touches the contract, the guide, the checker's 
 
 ### Container-first approach
 
-In a container-first approach the server's deliverable is a container image, not a checkout. One image is built from the repository root (it carries `openapi.yaml`, because the contract is a runtime dependency), pinned by digest to its base images, run as an unprivileged user on a read-only filesystem, and started as a single uvicorn process. The same image applies migrations as a separate step. `compose.yaml` runs PostgreSQL, the migration, and the API with one command; a smoke script asserts the container's contract; and CI lints the Dockerfile, builds the image, scans it for fixable vulnerabilities, and runs that smoke test on every pull request.
+In a container-first approach the server's deliverable is a container image, not a checkout. One image is built from the repository root (it carries `openapi.yaml`, because the contract is a runtime dependency), pinned by digest to its base images, run as an unprivileged user on a read-only filesystem, and started as a single uvicorn process. The same image applies migrations as a separate step. `make up` bootstraps credentials and runs PostgreSQL, the migration, and the API; a smoke script asserts the container's contract; and CI lints the Dockerfile, builds the image, scans it for fixable vulnerabilities, and runs that smoke test on every pull request.
 
 What this buys:
 
@@ -70,7 +70,7 @@ What this buys:
 - **The runtime is proven on every pull request.** The smoke test checks what a deployment would otherwise discover the hard way: the process runs as uid 10001 with no capabilities and no privilege escalation, the filesystem is read-only, the probes answer, readiness follows the database down and back up, the schema is at head and migrating again is a no-op, and SIGTERM produces a clean exit.
 - **Security is the default posture.** Non-root, read-only, no capabilities, no shell entrypoint, no uv or test tooling or curl in the runtime, base images pinned by digest and moved by Dependabot, Debian security updates applied at build time, and a Trivy gate that fails the build on any fixable critical or high finding.
 - **Operations are explicit.** Configuration comes from the environment, and a misconfigured container refuses to start instead of running on a stray SQLite file; migrations run once, before the rollout, never at process start; liveness and readiness are separate endpoints, so a database incident takes replicas out of rotation without restarting them.
-- **Onboarding is one command.** `docker compose up --build --wait` gives a contributor the full stack, PostgreSQL included and on the same version CI tests against, with nothing installed but Docker.
+- **Onboarding is one command.** `make up` builds the image, creates development credentials if absent, and starts the full stack with readiness checks. Startup needs Docker with Compose, Make, and Bash; testing prerequisites are listed separately below.
 - **Deploy anywhere that runs OCI images.** Kubernetes, Compose, or any other runtime. The constraints the image assumes are written down in [server/README.md](server/README.md) instead of living in someone's head.
 
 The price: building needs Docker with BuildKit, the image is rebuilt when a base image moves, and the inner loop for tests stays on uv because it is faster than a container on macOS.
@@ -93,6 +93,8 @@ The price: building needs Docker with BuildKit, the image is rebuilt when a base
 | `tasks/` | The approved server plan (`plan.md`) and its task checklist (`todo.md`). |
 | `Dockerfile`, `.dockerignore` | The production image: non-root, read-only, one uvicorn process. The build context is the repository root because the server needs `openapi.yaml`. |
 | `compose.yaml` | The local stack: PostgreSQL 17, the one-shot migration, then the API, with the hardening a deployment should use. |
+| `Makefile` | Common development and verification commands; `make help` lists targets. |
+| `server/scripts/e2e.py` | Isolated, contract-checked curl workflows covering all 47 operations and audit regressions. |
 | `server/scripts/smoke_image.sh` | Proves the container contract against a built image, locally and in CI. |
 | `.github/workflows/server.yml` | GitHub Actions workflow that runs ruff, mypy, and the test suite on SQLite and on PostgreSQL. |
 | `.github/workflows/image.yml` | GitHub Actions workflow that lints the Dockerfile, builds the image, scans it for fixable vulnerabilities, and runs the smoke test on every push to `main` and every pull request. |
@@ -132,18 +134,54 @@ npx --yes @stoplight/prism-cli@5.16.0 mock openapi.yaml --errors
 
 ## Running the server
 
-With Docker installed and nothing else:
+**Startup prerequisites:** Docker Engine with Compose 2.24 or newer, Make, and Bash. Docker must be running. The examples also use curl.
+
+From a fresh clone, run:
+
+```sh
+make up
+TOKEN=$(make -s token)
+curl -si -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8000/v1/me
+make down
+```
+
+`make up` builds the shared image, safely bootstraps a gitignored `.env`, starts PostgreSQL, applies migrations, and waits for API readiness. Bootstrap preserves existing identity credentials and adds a missing cursor key. `make down` preserves the database volume. Set `NOTES_API_PORT` and `NOTES_API_DB_PORT` if ports 8000 and 5432 are busy.
+
+The complete sequence without Make is:
 
 ```sh
 docker compose build
-docker compose run --rm --no-deps -T api python -m notes_api.dev_issuer env > .env
-docker compose up --wait
+server/scripts/bootstrap.sh
+docker compose up --wait --no-build
 TOKEN=$(docker compose run --rm --no-deps -T api python -m notes_api.dev_issuer token --sub ada --name 'Ada Okafor')
 curl -si -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8000/v1/me
-docker compose down -v
+docker compose down
 ```
 
-The first command builds the image. The second writes a gitignored `.env` with a development identity provider (the server refuses to start without one, and a deployment points it at a real provider instead). The third starts PostgreSQL, applies the schema, and starts the API on `127.0.0.1:8000`; then a minted token calls `GET /v1/me`, which provisions the caller on first contact. Only the contract's routes under `/v1` and the two probes `/healthz` and `/readyz` exist. The server implements every operation in the contract: the user directory (`/me`, `/users`), teams with memberships (`/teams`), notes (`/notes`: create, read, conditional update, trash and restore, list and search), shares (`/notes/{noteId}/shares`), comments (`/notes/{noteId}/comments`), edit requests (`/notes/{noteId}/edit-requests`, `/edit-requests`: submit, inspect, list, revise, withdraw, reject, preview, merge, approve, revoke approval), ownership (`/notes/{noteId}/owners`, `/notes/{noteId}/review-policy`: co-owners and the review policy), and request comments (`/edit-requests/{requestId}/comments`). Every operation runs in the Schemathesis conformance suite, every request-schema fixture in `tests/negative_cases.yaml` is replayed through its endpoint, and an audit keeps every acceptance row of the design guide covered by a test. [server/README.md](server/README.md) covers development on both databases, how the server enforces the contract (validation, the check ladder, locking, the test harness, the hook seam), the behaviour of each resource, and operations: configuration, authentication, migrations, probes, and deployment constraints.
+The development issuer provisions each distinct token subject on first contact. A deployment uses a real identity provider and supplies `CURSOR_SIGNING_KEY`: 32 random bytes encoded as 64 hexadecimal characters. All replicas share the key. Cursors expire 24 hours after issuance; key rotation invalidates existing cursors, and clients restart pagination after `400 invalid_cursor`. See the [configuration and rollout guidance](server/README.md#configuration).
+
+### Development commands
+
+**Testing prerequisites:** uv and Python 3.12; PostgreSQL, smoke, and end-to-end verification also need Docker/Compose. Smoke and end-to-end verification need curl and Bash. Node.js/npm is needed only for the separate Redocly documentation lint.
+
+| Target | Purpose |
+| --- | --- |
+| `make help` | List targets and prerequisites. |
+| `make build` | Build the image shared by the API and migrations. |
+| `make bootstrap` | Build and atomically create missing development settings with private file permissions. |
+| `make up` / `make down` | Bootstrap and start with readiness checks / stop while preserving data. |
+| `make logs` | Follow application logs. |
+| `make token SUB=ada NAME="Ada Okafor"` | Mint a development token (these are the defaults). |
+| `make check` | Locked dependency setup, non-mutating format check, lint, typing, generated-model drift, and contract checks. |
+| `make test` | SQLite suite; ignores an inherited PostgreSQL test URL. |
+| `make test-postgres` | Suite against a new disposable PostgreSQL stack. |
+| `make smoke` | Build and verify the production image in an isolated stack. |
+| `make e2e` | Build and run the curl workflows against an isolated stack. |
+| `make verify` | Run checks, SQLite, PostgreSQL, smoke, and end-to-end verification in order. |
+
+PostgreSQL, smoke, and end-to-end runners each use a unique Compose project, temporary environment file, and automatically allocated localhost ports. They remove only their own resources. Curl transcripts redact tokens and are saved outside the repository; the runner prints the artifact directory.
+
+Only the contract's routes under `/v1` and the two probes `/healthz` and `/readyz` exist. The server implements every operation in the contract: the user directory (`/me`, `/users`), teams with memberships (`/teams`), notes (`/notes`: create, read, conditional update, trash and restore, list and search), shares (`/notes/{noteId}/shares`), comments (`/notes/{noteId}/comments`), edit requests (`/notes/{noteId}/edit-requests`, `/edit-requests`: submit, inspect, list, revise, withdraw, reject, preview, merge, approve, revoke approval), ownership (`/notes/{noteId}/owners`, `/notes/{noteId}/review-policy`: co-owners and the review policy), and request comments (`/edit-requests/{requestId}/comments`). Every operation runs in the Schemathesis conformance suite, every request-schema fixture in `tests/negative_cases.yaml` is replayed through its endpoint, and an audit keeps every acceptance row of the design guide covered by a test. [server/README.md](server/README.md) covers development on both databases, how the server enforces the contract (validation, the check ladder, locking, the test harness, the hook seam), the behaviour of each resource, and operations: configuration, authentication, migrations, probes, and deployment constraints.
 
 ## Releases and versioning
 

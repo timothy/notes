@@ -30,7 +30,7 @@ jobs:
       - run: docker compose config -q
 
   build:
-    name: build, scan, smoke (linux/amd64)
+    name: build, scan, smoke, e2e (linux/amd64)
     needs: lint
     runs-on: ubuntu-24.04
     steps:
@@ -58,3 +58,11 @@ jobs:
           TRIVY_DB_REPOSITORY: public.ecr.aws/aquasecurity/trivy-db:2,ghcr.io/aquasecurity/trivy-db:2
       - name: Smoke-test the image through compose.yaml
         run: NOTES_API_IMAGE=notes-api:ci server/scripts/smoke_image.sh
+      - uses: astral-sh/setup-uv@v10.1.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: server/uv.lock
+      - name: Install locked verification dependencies
+        run: cd server && uv sync --locked
+      - name: Exercise all operations and smoke cleanup isolation
+        run: cd server && NOTES_API_IMAGE=notes-api:ci uv run python scripts/e2e.py

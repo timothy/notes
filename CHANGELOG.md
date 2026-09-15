@@ -8,12 +8,23 @@ Each release is an annotated tag `v<version>` on `main`, so a frozen copy of any
 
 ## [Unreleased]
 
+### Fixed
+
+- Signing-key removal now takes effect after the five-minute JWKS document cache expires; failed refreshes reject authentication.
+- Container and local startup disable Uvicorn access logs, preserving structured request tracing without query text, note bodies, or tokens.
+- JSON lone surrogates return `422 validation_failed` before persistence or schema-error rendering, including malformed property names. Unexpected 500 responses retain the request ID and `Cache-Control`.
+- Every conditional operation rejects repeated `If-Match` headers at the precondition stage. Trailing slashes return the documented 404 Problem without redirects.
+- Pagination cursors are signed and expire 24 hours after issuance. API startup requires `CURSOR_SIGNING_KEY` (64 hex characters), shared across replicas. Rotation and the transition from unsigned cursors invalidate existing cursors; clients restart pagination. No schema migration is required.
+- Compose builds the shared API/migration image once. Migrations and purge require only database settings. The README and API introduction now describe the implemented server and complete startup sequence.
+
 ### Added
 
+- A Makefile for safe bootstrap/startup, checks, both database suites, smoke, and end-to-end verification. Bootstrap preserves identity credentials and adds a missing cursor key atomically with private permissions.
+- Disposable verification stacks with unique projects, temporary credentials, and dynamic localhost ports. The reusable curl harness checks all 47 operations and audit regressions, including preservation of a control stack after successful and failed smoke cleanup; logs redact tokens and stay outside commits.
 - Repository: a reference server under `server/` (FastAPI), shipped as a container image (`Dockerfile`: non-root,
   read-only, one uvicorn process). `compose.yaml` runs PostgreSQL 17, the migration, and the API locally;
   `.github/workflows/image.yml` lints, scans, and smoke-tests the image on every pull request. The server requires
-  `DATABASE_URL` and the `OIDC_*` settings, verifies bearer tokens (RS256 and ES256, inline JWKS or JWKS URL), and
+  `DATABASE_URL`, `CURSOR_SIGNING_KEY`, and the `OIDC_*` settings, verifies bearer tokens (RS256 and ES256, inline JWKS or JWKS URL), and
   implements every operation of the contract: `GET /me`, `GET /users`, and `GET /users/{userId}` with keyset
   cursors; the team operations (`/teams`, `/teams/{teamId}`) and the membership operations
   (`/teams/{teamId}/members`, `/teams/{teamId}/members/{userId}`) with last-admin protection under the team lock;
