@@ -8,7 +8,7 @@
 
 FROM ghcr.io/astral-sh/uv:0.11.33@sha256:77280f2f771df71f90786c314fe1bbc1e023feac652969bbf139c280babf2eb7 AS uv
 
-FROM python:3.12.14-slim-trixie@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea AS builder
+FROM python:3.12.15-slim-trixie@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1 AS builder
 COPY --from=uv /uv /bin/uv
 # Precompile bytecode (the runtime filesystem is read-only), copy instead of hardlinking out of the cache
 # mount, use the image's interpreter, and leave the dev dependency group out.
@@ -25,7 +25,7 @@ COPY server/src ./src
 RUN --mount=type=cache,target=/root/.cache/uv uv sync --locked --no-editable
 
 # The runtime must be the same image as the builder: the venv records the interpreter's absolute path.
-FROM python:3.12.14-slim-trixie@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea
+FROM python:3.12.15-slim-trixie@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1
 LABEL org.opencontainers.image.source=https://github.com/timothy/notes \
       org.opencontainers.image.licenses=Apache-2.0
 # Apply Debian security updates published since the pinned base was built, then drop the apt lists.
